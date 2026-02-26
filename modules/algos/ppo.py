@@ -51,7 +51,7 @@ class PPOAlgorithm:
         torch.save(policy.state_dict(), policy_path)
         logging.info("saved policy to %s", policy_path)
 
-        # 2. ONNX export (actor only: body → mean action)
+        # 2. ONNX export (actor only: body → mean action, single file)
         try:
             actor = _ActorForExport(policy.body, policy.dist_head.mean)
             actor.eval()
@@ -66,9 +66,21 @@ class PPOAlgorithm:
                 output_names=["action_mean"],
                 dynamic_axes={"obs": {0: "batch"}, "action_mean": {0: "batch"}},
             )
+            _ensure_single_onnx_file(onnx_path)
             logging.info("saved ONNX actor to %s", onnx_path)
         except Exception:
             logging.exception("ONNX export failed")
+
+
+def _ensure_single_onnx_file(onnx_path: str) -> None:
+    """Merge external data back into the .onnx protobuf if the exporter split it."""
+    data_path = onnx_path + ".data"
+    if not os.path.exists(data_path):
+        return
+    import onnx
+    model = onnx.load(onnx_path, load_external_data=True)
+    onnx.save(model, onnx_path)
+    os.remove(data_path)
 
 
 def to_torch(batch: Dict[str, Any], device: torch.device) -> Dict[str, torch.Tensor]:

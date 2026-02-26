@@ -406,6 +406,7 @@ class PPOAMPAlgorithm:
                 output_names=["action_mean"],
                 dynamic_axes={"obs": {0: "batch"}, "action_mean": {0: "batch"}},
             )
+            _ensure_single_onnx_file(onnx_path)
             logging.info("saved ONNX actor to %s", onnx_path)
         except Exception:
             logging.exception("ONNX export failed")
@@ -426,6 +427,18 @@ class _ActorForExport(nn.Module):
 # ------------------------------------------------------------------
 # Helpers
 # ------------------------------------------------------------------
+
+def _ensure_single_onnx_file(onnx_path: str) -> None:
+    """Merge external data back into the .onnx protobuf if the exporter split it."""
+    import os as _os
+    data_path = onnx_path + ".data"
+    if not _os.path.exists(data_path):
+        return
+    import onnx
+    model = onnx.load(onnx_path, load_external_data=True)
+    onnx.save(model, onnx_path)
+    _os.remove(data_path)
+
 
 def _to_torch(batch: Dict[str, Any], device: torch.device) -> Dict[str, torch.Tensor]:
     out: Dict[str, torch.Tensor] = {}
