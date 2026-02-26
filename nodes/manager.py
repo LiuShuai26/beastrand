@@ -48,8 +48,13 @@ def _dtype_str(dt: np.dtype) -> str:
     return _DTYPE2STR.get(np.dtype(dt).type, "float32")
 
 
-def probe_env(env_id: str, seed: int = 0) -> Dict[str, Any]:
-    env = gym.make(env_id)
+def probe_env(env_id: str, seed: int = 0,
+              make_env_path: Optional[str] = None) -> Dict[str, Any]:
+    if make_env_path:
+        _make_env = get_object_from_path(make_env_path)
+        env = _make_env(env_id, seed=seed)
+    else:
+        env = gym.make(env_id)
     try:
         env.reset(seed=seed)
         obs_space = env.observation_space
@@ -154,7 +159,9 @@ class Manager:
         )
 
         # 1. Probe env
-        specs = probe_env(self.args.env_id, seed=self.args.seed)
+        _mep = getattr(self.args, "make_env_path", None)
+        specs = probe_env(self.args.env_id, seed=self.args.seed,
+                          make_env_path=_mep)
         obs_spec, act_spec = specs["obs"], specs["act"]
 
         self.ctx.obs_shape = tuple(obs_spec["shape"])

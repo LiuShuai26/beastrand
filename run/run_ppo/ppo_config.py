@@ -14,6 +14,8 @@ class Args:
     compute_gae = True
     bootstrap_value = True
 
+    make_env_path: Optional[str] = field(default=None, metadata={"help": "Dotted path to custom env factory (e.g. modules.envs.make_env_amp.make_env_amp)"})
+
     device: str = field(default="cpu", metadata={"help": "Device to run on (cpu/cuda)"})
     # Experiment & environment
     env_id: str = field(default="Humanoid-v5", metadata={"help": "Gym/Gymnasium env id"})
