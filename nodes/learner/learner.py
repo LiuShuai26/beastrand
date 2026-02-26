@@ -114,8 +114,13 @@ def main(ctx, logger_queue) -> None:
         pending = []  # list of (traj_idx, view_dict)
 
         while not ctx.stop_event.is_set():
+            # Poll with timeout so we can check stop_event and flush
+            # partial batches promptly during shutdown.
+            ready_socks = bus.poll(timeout_ms=100)
+            if "filled_in" not in ready_socks:
+                continue
             try:
-                raw = bus.recv("filled_in", noblock=False)
+                raw = bus.recv("filled_in", noblock=True)
             except Exception:
                 continue
 
@@ -145,7 +150,8 @@ def main(ctx, logger_queue) -> None:
                     with have_batch:
                         have_batch.notify()
 
-        # Flush any remaining trajectories on shutdown
+        # Flush any remaining trajectories on shutdown so traj buffers
+        # are recycled and workers blocked on traj_queue.get() unblock.
         if pending:
             _flush_pending(pending)
 
@@ -220,6 +226,10 @@ def main(ctx, logger_queue) -> None:
                     pass
 
     finally:
+        # Wait for ingest thread to flush any pending traj buffers so that
+        # workers blocked on traj_queue.get() are unblocked before we exit.
+        ing_thread.join(timeout=5.0)
+
         # Save checkpoint on exit (if algorithm supports it)
         if hasattr(algorithm, "save_checkpoint"):
             import os

@@ -163,6 +163,13 @@ class RolloutWorker:
                     self._advance_single(es)
                     t2 = time.monotonic()
 
+                    if es.step >= self.T:
+                        # _finalize_trajectory failed to get a new buffer;
+                        # es.step is still T so sending an ACT request would
+                        # cause an IndexError in the inference server.  Skip
+                        # this env — es.pending stays False so it won't be
+                        # polled again.
+                        continue
                     self._send_request(es, OP_ACT)
                     t3 = time.monotonic()
 
@@ -294,10 +301,21 @@ class RolloutWorker:
             if elapsed > 0:
                 log_scalar(run="actor", tag="fps", value=step / elapsed, step=step)
 
-        # Get new trajectory buffer
-        try:
-            es.traj_idx = self.traj_queue.get(timeout=10.0)
-        except Empty:
+        # Get new trajectory buffer.  Use short timeouts in a loop so we
+        # can exit promptly when stop_event fires instead of blocking for
+        # the full 10 seconds.
+        got_buffer = False
+        for _ in range(20):  # 20 × 0.5s = 10s total
+            if self.ctx.stop_event.is_set():
+                return
+            try:
+                es.traj_idx = self.traj_queue.get(timeout=0.5)
+                got_buffer = True
+                break
+            except Empty:
+                continue
+
+        if not got_buffer:
             logging.error("[worker:%d] timeout waiting for free traj buffer", self.worker_idx)
             return
 
