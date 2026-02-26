@@ -16,7 +16,7 @@ The goal of Beastrand is to be as simple as CleanRL and as high-throughput as Sa
 
 ### Supported Environments
 * **Gymnasium** — any standard Gym/Gymnasium environment (e.g. `Humanoid-v5`, `CartPole-v1`)
-* **Beast .so** — custom compiled C++ environments (e.g. `HumanoidEnv`), loaded via `beastlab.env_loader`
+* **Beast .so** — custom compiled C++ environments (e.g. `HumanoidEnv`), loaded directly via `importlib` (no external dependencies)
 
 The environment backend is auto-detected: the AMP factory tries Beast first and falls back to `gym.make()`. A custom factory can be specified via `--make-env-path`.
 

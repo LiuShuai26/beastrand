@@ -126,7 +126,7 @@ class RolloutWorker:
         self.envs: List[EnvState] = []
         for ei in range(self.num_envs):
             seed = args.seed + worker_idx * self.num_envs + ei
-            env = _make_env(args.env_id, seed=seed)
+            env = _make_env(args.env_id, seed=seed, args=args)
             obs, _ = env.reset(seed=seed)
             traj_idx = self.traj_queue.get()
             self.envs.append(EnvState(

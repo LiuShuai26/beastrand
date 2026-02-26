@@ -29,6 +29,10 @@ class Args:
     seed: int = field(default=1, metadata={"help": "Random seed"})
     total_env_steps: int = field(default=50_000_000, metadata={"help": "Total environment steps"})
 
+    # --- Beast .so env config ---
+    reward_mode: str = field(default="idle", metadata={"help": "Reward mode: idle, walk, or punch"})
+    target_vx: float = field(default=1.5, metadata={"help": "Target forward velocity for walk mode"})
+
     lag_controll: bool = field(default=False, metadata={"help": "Lag control flag"})
     policy_lag: int = field(default=1, metadata={"help": "Max policy lag"})
 

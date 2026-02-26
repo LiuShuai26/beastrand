@@ -18,7 +18,8 @@ import numpy as np
 _NORM_WARNED = False
 
 
-def make_env(env_id: str, seed: int = 0, render_mode: str | None = None):
+def make_env(env_id: str, seed: int = 0, render_mode: str | None = None,
+             *, args=None):
     """
     Create a Gymnasium environment with reproducible seeding.
 

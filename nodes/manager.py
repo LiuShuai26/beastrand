@@ -49,10 +49,11 @@ def _dtype_str(dt: np.dtype) -> str:
 
 
 def probe_env(env_id: str, seed: int = 0,
-              make_env_path: Optional[str] = None) -> Dict[str, Any]:
+              make_env_path: Optional[str] = None,
+              args=None) -> Dict[str, Any]:
     if make_env_path:
         _make_env = get_object_from_path(make_env_path)
-        env = _make_env(env_id, seed=seed)
+        env = _make_env(env_id, seed=seed, args=args)
     else:
         env = gym.make(env_id)
     try:
@@ -164,7 +165,7 @@ class Manager:
         # 1. Probe env
         _mep = getattr(self.args, "make_env_path", None)
         specs = probe_env(self.args.env_id, seed=self.args.seed,
-                          make_env_path=_mep)
+                          make_env_path=_mep, args=self.args)
         obs_spec, act_spec = specs["obs"], specs["act"]
 
         self.ctx.obs_shape = tuple(obs_spec["shape"])
