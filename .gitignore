@@ -38,3 +38,5 @@ train_logs/
 .env
 CONVERSATION_CONTEXT.md
 PLAN.md
+
+keyframes/

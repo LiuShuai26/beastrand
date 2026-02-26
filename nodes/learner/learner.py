@@ -80,9 +80,39 @@ def main(ctx, logger_queue) -> None:
     have_batch = threading.Condition(buf_lock)
 
     # ------------------------------------------------------------------
-    # Ingest thread: recv filled traj → GAE → append → recycle
+    # Ingest thread: recv filled traj → prepare → append → recycle
     # ------------------------------------------------------------------
+    # If the algorithm supports batched finalization (prepare_batch_finalize),
+    # accumulate trajectories and flush them together so the discriminator
+    # forward pass runs on one large batch instead of N small ones.
+    _use_batched_finalize = hasattr(algorithm, "prepare_batch_finalize")
+    _batch_trigger = max(1, batch_size // T) if _use_batched_finalize else 1
+
+    def _flush_pending(pending):
+        """Run batched finalize, append all views, recycle traj buffers."""
+        if not pending:
+            return
+
+        views = [v for _, v in pending]
+        algorithm.prepare_batch_finalize(views)
+
+        with buf_lock:
+            for _, v in pending:
+                batch_buf.append_slot(v)
+            rdy = batch_buf.valid_steps >= learning_starts
+
+        for ti, _ in pending:
+            buffer_mgr.traj_buffer_queue.put(ti)
+
+        pending.clear()
+
+        if rdy:
+            with have_batch:
+                have_batch.notify()
+
     def ingest_worker():
+        pending = []  # list of (traj_idx, view_dict)
+
         while not ctx.stop_event.is_set():
             try:
                 raw = bus.recv("filled_in", noblock=False)
@@ -94,19 +124,30 @@ def main(ctx, logger_queue) -> None:
             # Get numpy views into this trajectory (zero-copy)
             view = buffer_mgr.slot_as_numpy(traj_idx)
 
-            # Compute GAE / prepare batch fields
+            # Phase 1: lightweight per-traj prep (numpy only for batched path,
+            # or full GAE computation for the legacy path)
             algorithm.prepare_batch(view)
 
-            with buf_lock:
-                batch_buf.append_slot(view)
-                ready = batch_buf.valid_steps >= learning_starts
+            if _use_batched_finalize:
+                # Accumulate until batch_trigger, then flush all at once
+                pending.append((traj_idx, view))
+                if len(pending) >= _batch_trigger:
+                    _flush_pending(pending)
+            else:
+                # Legacy path (plain PPO): append + recycle immediately
+                with buf_lock:
+                    batch_buf.append_slot(view)
+                    ready = batch_buf.valid_steps >= learning_starts
 
-            # Recycle trajectory buffer back to queue
-            buffer_mgr.traj_buffer_queue.put(traj_idx)
+                buffer_mgr.traj_buffer_queue.put(traj_idx)
 
-            if ready:
-                with have_batch:
-                    have_batch.notify()
+                if ready:
+                    with have_batch:
+                        have_batch.notify()
+
+        # Flush any remaining trajectories on shutdown
+        if pending:
+            _flush_pending(pending)
 
     ing_thread = threading.Thread(target=ingest_worker, name="ingest", daemon=True)
     ing_thread.start()
