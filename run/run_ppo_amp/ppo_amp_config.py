@@ -43,8 +43,7 @@ class Args:
     # --- RL / PPO ---
     gamma: float = field(default=0.95, metadata={"help": "Discount factor"})
     lam: float = field(default=0.95, metadata={"help": "GAE lambda"})
-    buffer_size: int = field(default=8192, metadata={"help": "Learner buffer size"})
-    replay_capacity: int = field(default=8192, metadata={"help": "Max transitions stored"})
+    replay_capacity: int = field(default=8192, metadata={"help": "Max transitions stored (learner buffer size)"})
     learning_starts: int = field(default=8192, metadata={"help": "Steps before first update"})
     batch_size: int = field(default=8192, metadata={"help": "Learner batch size"})
     minibatch_size: int = field(default=512, metadata={"help": "Learner minibatch size"})
@@ -106,13 +105,11 @@ class Args:
             raise ValueError("batch_size must be a multiple of minibatch_size")
         if self.batch_size % self.rollout != 0:
             raise ValueError("batch_size must be a multiple of rollout")
-        if self.buffer_size < self.batch_size:
-            raise ValueError("buffer_size must be at least as large as batch_size")
-        if self.buffer_size % self.batch_size != 0:
-            raise ValueError("buffer_size must be a multiple of batch_size")
-        if self.replay_capacity < self.buffer_size:
-            raise ValueError("replay_capacity must be at least as large as buffer_size")
-        if self.learning_starts < self.buffer_size:
-            raise ValueError("learning_starts must be at least as large as buffer_size")
+        if self.replay_capacity < self.batch_size:
+            raise ValueError("replay_capacity must be at least as large as batch_size")
+        if self.replay_capacity % self.batch_size != 0:
+            raise ValueError("replay_capacity must be a multiple of batch_size")
+        if self.learning_starts < self.replay_capacity:
+            raise ValueError("learning_starts must be at least as large as replay_capacity")
         if self.learning_starts % self.batch_size != 0:
             raise ValueError("learning_starts must be a multiple of batch_size")

@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Overview
 
-beatstrand is a distributed reinforcement learning framework for high-throughput training. It uses a multi-process, node-based architecture with ZMQ IPC for communication and PyTorch shared-memory tensors for zero-copy data sharing. Implemented algorithm: PPO (referenced from CleanRL).
+beatstrand is a distributed reinforcement learning framework for high-throughput training. It uses a multi-process, node-based architecture with ZMQ IPC for communication and PyTorch shared-memory tensors for zero-copy data sharing. Implemented algorithms: PPO, PPO-LSTM, and PPO-AMP (Adversarial Motion Priors). PPO implementation referenced from CleanRL.
 
 ## Commands
 
@@ -12,6 +12,10 @@ beatstrand is a distributed reinforcement learning framework for high-throughput
 ```bash
 python -m run.run_ppo.train_ppo          # PPO (default: Humanoid-v5)
 python -m run.run_ppo.train_ppo --env-id CartPole-v1 --num-workers 4
+
+# Beast .so environment (e.g. HumanoidEnv)
+python -m run.run_ppo_amp.train_ppo_amp --env-id HumanoidEnv --keyframe-file path/to/keyframes.json
+python -m run.run_ppo.train_ppo --env-id HumanoidEnv --make-env-path modules.envs.make_env_amp.make_env_amp
 ```
 
 CLI parsing uses `tyro` — all fields in the `Args` dataclass become CLI flags (use `--help` for full list).
@@ -48,7 +52,7 @@ The `Manager` (nodes/manager.py) is the orchestrator. It creates shared resource
 
 ### Communication patterns
 
-**StrandBus** (strandbus/strandbus.py) wraps ZMQ with named sockets. All IPC uses `ipc:///tmp/beatstrand/` endpoints:
+**StrandBus** (strandbus/strandbus.py) wraps ZMQ with named sockets. All IPC uses `ipc:///tmp/beatstrand/<run_name>/` endpoints (unique per run, enabling concurrent training):
 - `infer.req` — PUSH/PULL for inference requests (struct.pack, 20 bytes)
 - `data.filled.in` / `data.filled.out` — PUSH/PULL for filled trajectory IDs (struct.pack, 4 bytes)
 
@@ -65,9 +69,18 @@ Inference responses use shared memory flags (`ready_flags[worker_idx, env_idx]`)
 7. Worker writes reward/done, advances step. When step >= T: sends traj_idx to DataServer → Learner
 8. Learner reads trajectory data (zero-copy numpy view), computes GAE, trains, puts traj_idx back in queue
 
+### Environment backends
+
+Two environment backends are supported:
+
+1. **Gymnasium (default)** — any env registered in the Gymnasium registry (e.g. `Humanoid-v5`, `CartPole-v1`), loaded via `gym.make()`.
+2. **Beast .so** — custom compiled C++ environments (e.g. `HumanoidEnv.cpython-310-darwin.so`), loaded via `beastlab.env_loader.make_beast_gym()`. The factory in `modules/envs/make_env_amp.py` tries Beast first; if `beastlab` is not installed or the `.so` is not found, it falls back to `gym.make()`.
+
+The environment factory is pluggable via `make_env_path` in the config (dotted Python path). `probe_env()` in Manager also respects this path so that env specs are correctly probed for custom backends.
+
 ### Module system (pluggable via dotted paths)
 
-Config dataclasses (`Args`) specify `data_record_path`, `policy_path`, and `algorithm_path` as dotted Python paths. These are resolved at runtime via `get_object_from_path()`.
+Config dataclasses (`Args`) specify `data_record_path`, `policy_path`, `algorithm_path`, and optionally `make_env_path` as dotted Python paths. These are resolved at runtime via `get_object_from_path()`.
 
 Key module interfaces:
 - **BasePolicy** (modules/policy/base_policy.py) — `nn.Module`; must implement `act()`, optionally `value()`, `evaluate_actions()`
@@ -80,4 +93,4 @@ Key module interfaces:
 - Logging uses a centralized logger process via `log_scalar()` → TensorBoard
 - Process start method is `spawn` (required for CUDA safety)
 - Torch sharing strategy is `file_system` (avoids fd limits)
-- IPC endpoints are under `ipc:///tmp/beatstrand/`
+- IPC endpoints are under `ipc:///tmp/beatstrand/<run_name>/` (unique per run, enabling concurrent training)

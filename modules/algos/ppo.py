@@ -18,7 +18,8 @@ Model API:
 """
 
 from __future__ import annotations
-from dataclasses import dataclass
+import logging
+import os
 from typing import Dict, Any
 
 import numpy as np
@@ -40,6 +41,34 @@ class PPOAlgorithm:
 
     def update(self, batch):
         return ppo_update(self.ctx, self.policy, self.opt, batch, self.device)
+
+    def save_checkpoint(self, save_dir: str, policy: nn.Module) -> None:
+        """Save policy weights and ONNX actor."""
+        os.makedirs(save_dir, exist_ok=True)
+
+        # 1. Policy state dict
+        policy_path = os.path.join(save_dir, "policy.pt")
+        torch.save(policy.state_dict(), policy_path)
+        logging.info("saved policy to %s", policy_path)
+
+        # 2. ONNX export (actor only: body → mean action)
+        try:
+            actor = _ActorForExport(policy.body, policy.dist_head.mean)
+            actor.eval()
+            obs_dim = policy.obs_dim
+            dummy = torch.zeros(1, obs_dim, device=self.device)
+            onnx_path = os.path.join(save_dir, "actor.onnx")
+            torch.onnx.export(
+                actor,
+                dummy,
+                onnx_path,
+                input_names=["obs"],
+                output_names=["action_mean"],
+                dynamic_axes={"obs": {0: "batch"}, "action_mean": {0: "batch"}},
+            )
+            logging.info("saved ONNX actor to %s", onnx_path)
+        except Exception:
+            logging.exception("ONNX export failed")
 
 
 def to_torch(batch: Dict[str, Any], device: torch.device) -> Dict[str, torch.Tensor]:
@@ -176,3 +205,15 @@ def ppo_update(
         "clip_frac": np.mean(clipfracs),
         "num_minibatches": float(n_mb),
     }
+
+
+class _ActorForExport(nn.Module):
+    """Minimal actor (body + mean head) for ONNX export."""
+
+    def __init__(self, body: nn.Module, mean_head: nn.Module):
+        super().__init__()
+        self.body = body
+        self.mean_head = mean_head
+
+    def forward(self, obs: torch.Tensor) -> torch.Tensor:
+        return self.mean_head(self.body(obs))

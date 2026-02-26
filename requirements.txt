@@ -1,0 +1,10 @@
+# Required dependencies
+torch>=2.0
+numpy>=1.24
+gymnasium>=0.29
+pyzmq>=25.0
+tyro>=0.5
+tensorboard>=2.14
+
+# Optional: Beast .so environment backend
+# beastlab

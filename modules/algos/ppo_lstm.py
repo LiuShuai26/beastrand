@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import logging
+import os
 from typing import Any, Dict
 
 import numpy as np
@@ -24,6 +26,15 @@ class PPOLSTMAlgorithm:
 
     def update(self, batch):
         return ppo_lstm_update(self.ctx, self.policy, self.opt, batch, self.device)
+
+    def save_checkpoint(self, save_dir: str, policy: nn.Module) -> None:
+        """Save policy weights (ONNX export not supported for LSTM policies)."""
+        os.makedirs(save_dir, exist_ok=True)
+
+        policy_path = os.path.join(save_dir, "policy.pt")
+        torch.save(policy.state_dict(), policy_path)
+        logging.info("saved policy to %s", policy_path)
+        logging.info("ONNX export skipped for LSTM policy (not supported)")
 
 
 def _validate_recurrence(ctx, N: int) -> int:

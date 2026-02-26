@@ -85,7 +85,7 @@ class InferenceServer:
 
         # -- ZMQ (only for receiving requests, no reply sockets) --
         self.bus = StrandBus()
-        base = "ipc:///tmp/beatstrand"
+        base = ctx.ipc_dir
         self.bus.open("req", mode="pull", endpoint=f"{base}/infer.req", bind=True)
 
         # -- Profiling --

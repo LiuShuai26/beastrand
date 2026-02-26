@@ -6,13 +6,13 @@ import time
 @dataclass
 class Args:
 
-    data_record_path = "modules.dataset.data_record.ppo_data_record.PPODataRecord"
-    policy_path = "modules.policy.ppo_policy.PPOPolicy"
-    algorithm_path = "modules.algos.ppo.PPOAlgorithm"
+    data_record_path: str = field(default="modules.dataset.data_record.ppo_data_record.PPODataRecord", init=False)
+    policy_path: str = field(default="modules.policy.ppo_policy.PPOPolicy", init=False)
+    algorithm_path: str = field(default="modules.algos.ppo.PPOAlgorithm", init=False)
 
-    buffer_mode = "fullpass"
-    compute_gae = True
-    bootstrap_value = True
+    buffer_mode: str = field(default="fullpass", init=False)
+    compute_gae: bool = field(default=True, init=False)
+    bootstrap_value: bool = field(default=True, init=False)
 
     make_env_path: Optional[str] = field(default=None, metadata={"help": "Dotted path to custom env factory (e.g. modules.envs.make_env_amp.make_env_amp)"})
 
@@ -47,8 +47,7 @@ class Args:
     # RL specifics
     gamma: float = field(default=0.99, metadata={"help": "Discount factor"})
     lam: float = field(default=0.95, metadata={"help": "GAE lambda"})
-    buffer_size: int = field(default=1024, metadata={"help": "Learner buffer size"})
-    replay_capacity: int = field(default=1024, metadata={"help": "Max number of transitions stored"})
+    replay_capacity: int = field(default=1024, metadata={"help": "Max number of transitions stored (learner buffer size)"})
     learning_starts: int = field(default=1024, metadata={
         "help": "Number of env steps before starting updates (collect-only)"
     })
@@ -99,14 +98,12 @@ class Args:
             raise ValueError("batch_size must be a multiple of minibatch_size")
         if self.batch_size % self.rollout != 0:
             raise ValueError("batch_size must be a multiple of rollout")
-        if self.buffer_size < self.batch_size:
-            raise ValueError("buffer_size must be at least as large as batch_size")
-        if self.buffer_size % self.batch_size != 0:
-            raise ValueError("buffer_size must be a multiple of batch_size")
-        if self.replay_capacity < self.buffer_size:
-            raise ValueError("replay_capacity must be at least as large as buffer_size")
-        if self.learning_starts < self.buffer_size:
-            raise ValueError("learning_starts must be at least as large as buffer_size")
+        if self.replay_capacity < self.batch_size:
+            raise ValueError("replay_capacity must be at least as large as batch_size")
+        if self.replay_capacity % self.batch_size != 0:
+            raise ValueError("replay_capacity must be a multiple of batch_size")
+        if self.learning_starts < self.replay_capacity:
+            raise ValueError("learning_starts must be at least as large as replay_capacity")
         if self.learning_starts % self.batch_size != 0:
             raise ValueError("learning_starts must be a multiple of batch_size")
         self.validate()

@@ -107,7 +107,7 @@ class RolloutWorker:
 
         # --- ZMQ (only for sending requests + filled trajectories) ---
         self.bus = StrandBus()
-        base = "ipc:///tmp/beatstrand"
+        base = ctx.ipc_dir
         self.bus.open("infer_req", mode="push", endpoint=f"{base}/infer.req", bind=False)
         self.bus.open("filled_out", mode="push", endpoint=f"{base}/data.filled.in", bind=False)
 

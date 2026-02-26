@@ -23,7 +23,7 @@ class DataServer:
         self.ctx = ctx
         self.bus = StrandBus()
 
-        base = "ipc:///tmp/beatstrand"
+        base = ctx.ipc_dir
         # filled traj IDs: workers → this → learner
         self.bus.open("filled_in", mode="pull", endpoint=f"{base}/data.filled.in", bind=True)
         self.bus.open("filled_out", mode="push", endpoint=f"{base}/data.filled.out", bind=True)

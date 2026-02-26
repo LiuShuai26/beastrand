@@ -98,6 +98,9 @@ class Shared:
         self.stop_event = mp.Event()
         self.global_step = mp.Value("i", 0)
 
+        # Unique IPC directory for this run (avoids collisions between concurrent runs)
+        self.ipc_dir = f"ipc:///tmp/beatstrand/{self.run_name}"
+
         # Filled by Manager.launch() before spawning children
         self.buffer_mgr: Optional[BufferMgr] = None
         self.param_server: Optional[ParameterServer] = None

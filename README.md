@@ -14,9 +14,14 @@ The goal of Beastrand is to be as simple as CleanRL and as high-throughput as Sa
   The system is composed of nodes, each responsible for a single role.
   Every node has its own script, making it easy to run, inspect, or replace independently.
 
+### Supported Environments
+* **Gymnasium** — any standard Gym/Gymnasium environment (e.g. `Humanoid-v5`, `CartPole-v1`)
+* **Beast .so** — custom compiled C++ environments (e.g. `HumanoidEnv`), loaded via `beastlab.env_loader`
+
+The environment backend is auto-detected: the AMP factory tries Beast first and falls back to `gym.make()`. A custom factory can be specified via `--make-env-path`.
+
 ### Implemented Algorithms
 * PPO (Proximal Policy Optimization)
-
-* SAC (Soft Actor-Critic)
+* PPO-AMP (Adversarial Motion Priors)
 
 Algorithm code is referenced from CleanRL

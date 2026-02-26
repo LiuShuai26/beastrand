@@ -1,13 +1,16 @@
 #!/usr/bin/env python3
 import multiprocessing as mp
+import os
 import time
 import zmq
 from strandbus.strandbus import StrandBus
 
+_BASE = f"ipc:///tmp/beatstrand/test_{os.getpid()}"
+
 
 def server():
     bus = StrandBus()
-    bus.open("pull", "pull", "ipc:///tmp/beatstrand/test.req", bind=True)
+    bus.open("pull", "pull", f"{_BASE}/test.req", bind=True)
     print("[server] waiting for messages...")
     while True:
         try:
@@ -24,7 +27,7 @@ def server():
 def client():
     time.sleep(0.5)  # wait for server bind
     bus = StrandBus()
-    bus.open("push", "push", "ipc:///tmp/beatstrand/test.req", bind=False)
+    bus.open("push", "push", f"{_BASE}/test.req", bind=False)
 
     for i in range(5):
         msg = f"hello {i}".encode()

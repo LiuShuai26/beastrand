@@ -62,7 +62,7 @@ def main(ctx, logger_queue) -> None:
 
     # --- ZMQ (only filled_in for receiving filled traj IDs) ---
     bus = StrandBus()
-    base = "ipc:///tmp/beatstrand"
+    base = ctx.ipc_dir
     bus.open("filled_in", mode="pull", endpoint=f"{base}/data.filled.out", bind=False)
 
     # --- Batch buffer ---
