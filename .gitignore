@@ -1,0 +1,40 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+*.egg
+dist/
+build/
+*.so
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Training logs
+train_logs/
+
+# ZMQ IPC sockets
+/tmp/beatstrand/
+
+# PyTorch
+*.pt
+*.pth
+*.ckpt
+
+# Misc
+*.log
+.env
+CONVERSATION_CONTEXT.md
+PLAN.md
