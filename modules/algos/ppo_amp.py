@@ -386,12 +386,23 @@ class PPOAMPAlgorithm:
         torch.save(policy.state_dict(), policy_path)
         logging.info("saved policy to %s", policy_path)
 
-        # 2. Discriminator state dict
+        # 2. Discriminator + optimizer state
         disc_path = os.path.join(save_dir, "discriminator.pt")
-        torch.save(self.discriminator.state_dict(), disc_path)
+        torch.save({
+            "discriminator": self.discriminator.state_dict(),
+            "disc_optimizer": self.disc_optimizer.state_dict(),
+        }, disc_path)
         logging.info("saved discriminator to %s", disc_path)
 
-        # 3. ONNX export (actor only: body → mean action, single file)
+        # 3. Motion buffer normalization stats
+        stats_path = os.path.join(save_dir, "amp_stats.pt")
+        torch.save({
+            "obs_mean": self.motion_buffer.obs_mean,
+            "obs_std": self.motion_buffer.obs_std,
+        }, stats_path)
+        logging.info("saved AMP stats to %s", stats_path)
+
+        # 4. ONNX export (actor only: body → mean action, single file)
         try:
             actor = _ActorForExport(policy.body, policy.dist_head.mean)
             actor.eval()
@@ -410,6 +421,30 @@ class PPOAMPAlgorithm:
             logging.info("saved ONNX actor to %s", onnx_path)
         except Exception:
             logging.exception("ONNX export failed")
+
+
+    def load_checkpoint(self, save_dir: str, policy: nn.Module) -> None:
+        """Load policy weights, discriminator weights, and optimizer state."""
+        import os
+
+        # 1. Policy
+        policy_path = os.path.join(save_dir, "policy.pt")
+        if os.path.exists(policy_path):
+            policy.load_state_dict(torch.load(policy_path, map_location=self.device))
+            logging.info("loaded policy from %s", policy_path)
+
+        # 2. Discriminator + optimizer
+        disc_path = os.path.join(save_dir, "discriminator.pt")
+        if os.path.exists(disc_path):
+            checkpoint = torch.load(disc_path, map_location=self.device)
+            if isinstance(checkpoint, dict) and "discriminator" in checkpoint:
+                self.discriminator.load_state_dict(checkpoint["discriminator"])
+                if "disc_optimizer" in checkpoint:
+                    self.disc_optimizer.load_state_dict(checkpoint["disc_optimizer"])
+            else:
+                # Legacy format: bare state_dict
+                self.discriminator.load_state_dict(checkpoint)
+            logging.info("loaded discriminator from %s", disc_path)
 
 
 class _ActorForExport(nn.Module):

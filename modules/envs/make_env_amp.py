@@ -161,6 +161,13 @@ def _try_beast_env(env_id: str, *, args=None):
         # 3. Wrap with BeastGymWrapper (Gymnasium interface)
         EnvClass = getattr(env_module, env_id)
         env = BeastGymWrapper(EnvClass())
+
+        # 4. Store obs layout metadata from .so (for Python-side auto-detection)
+        if hasattr(env_module, "observation_layout"):
+            env.obs_layout = env_module.observation_layout()
+        if hasattr(env_module, "amp_obs_slices"):
+            env.so_amp_obs_slices = [tuple(s) for s in env_module.amp_obs_slices()]
+
         logging.info("Loaded Beast .so env: %s", env_id)
         return env
     except ImportError:
