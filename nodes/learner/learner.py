@@ -162,6 +162,22 @@ def main(ctx, logger_queue) -> None:
 
     last_training_time = time.perf_counter()
 
+    # --- Periodic checkpoint ---
+    import os
+    _ckpt_interval = getattr(args, "checkpoint_interval", 0)
+    _ckpt_version_interval = max(1, _ckpt_interval // batch_size) if _ckpt_interval > 0 else 0
+    _last_ckpt_version = 0
+    _save_dir = os.path.join(getattr(args, "logdir", "train_logs"), ctx.run_name)
+
+    def _save_checkpoint(version: int) -> None:
+        if not hasattr(algorithm, "save_checkpoint"):
+            return
+        try:
+            algorithm.save_checkpoint(_save_dir, policy)
+            logging.info("[learner] periodic checkpoint saved (version=%d)", version)
+        except Exception:
+            logging.exception("[learner] periodic checkpoint failed")
+
     # ------------------------------------------------------------------
     # Training loop
     # ------------------------------------------------------------------
@@ -214,6 +230,11 @@ def main(ctx, logger_queue) -> None:
             # --- Update shared weights ---
             version = param_server.update(policy)
 
+            # --- Periodic checkpoint ---
+            if _ckpt_version_interval > 0 and version - _last_ckpt_version >= _ckpt_version_interval:
+                _save_checkpoint(version)
+                _last_ckpt_version = version
+
             # --- Logging ---
             log_scalar(run="learner", tag="policy_lag", value=policy_lag, step=version)
             log_scalar(run="learner", tag="get_data_time_ms", value=get_data_time, step=version)
@@ -230,17 +251,8 @@ def main(ctx, logger_queue) -> None:
         # workers blocked on traj_queue.get() are unblocked before we exit.
         ing_thread.join(timeout=5.0)
 
-        # Save checkpoint on exit (if algorithm supports it)
-        if hasattr(algorithm, "save_checkpoint"):
-            import os
-            save_dir = os.path.join(
-                getattr(args, "logdir", "train_logs"),
-                ctx.run_name,
-            )
-            try:
-                algorithm.save_checkpoint(save_dir, policy)
-            except Exception:
-                logging.exception("[learner] save_checkpoint failed")
+        # Save final checkpoint on exit (if algorithm supports it)
+        _save_checkpoint(int(buffer_mgr.policy_version.item()))
 
         bus.close_all()
         logging.info("[learner] exiting")

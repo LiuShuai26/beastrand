@@ -67,6 +67,7 @@ class Args:
     logdir: str = field(default="train_logs", metadata={"help": "Root log directory"})
     run_name: Optional[str] = field(default=None, metadata={"help": "Override run name; default: env + timestamp"})
     eval_interval: int = field(default=10_000, metadata={"help": "Eval every N env steps"})
+    checkpoint_interval: int = field(default=0, metadata={"help": "Save checkpoint every N env steps (0 = only on exit)"})
 
     # ---- helpers ----
     def make_run_name(self) -> str:

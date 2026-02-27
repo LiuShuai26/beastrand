@@ -80,10 +80,11 @@ class Args:
     disc_weight_decay: float = field(default=1e-4, metadata={"help": "Discriminator weight decay"})
     disc_update_epochs: int = field(default=1, metadata={"help": "Discriminator epochs per PPO iteration"})
 
-    # --- Logging ---
+    # --- Logging / checkpoints ---
     logdir: str = field(default="train_logs", metadata={"help": "Root log directory"})
     run_name: Optional[str] = field(default=None, metadata={"help": "Override run name"})
     eval_interval: int = field(default=10_000, metadata={"help": "Eval every N env steps"})
+    checkpoint_interval: int = field(default=5_000_000, metadata={"help": "Save checkpoint every N env steps (0 = only on exit)"})
 
     # ---- helpers ----
     def make_run_name(self) -> str:
