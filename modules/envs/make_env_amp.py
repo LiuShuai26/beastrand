@@ -53,7 +53,7 @@ class BeastGymWrapper(gym.Env):
         )
         cont_size = action_info["continuous_size"]
         self.action_space = spaces.Box(
-            low=-1.0, high=1.0, shape=(cont_size,), dtype=np.float32,
+            low=-np.inf, high=np.inf, shape=(cont_size,), dtype=np.float32,
         )
 
     def reset(self, seed=None, options=None):
@@ -62,7 +62,7 @@ class BeastGymWrapper(gym.Env):
         return np.asarray(obs, dtype=np.float32), info
 
     def step(self, action):
-        action = np.clip(np.asarray(action, dtype=np.float32), -1.0, 1.0)
+        action = np.asarray(action, dtype=np.float32)
         obs, rewards, terminated, truncated, info = self._env.step(action)
         return (
             np.asarray(obs, dtype=np.float32),
@@ -98,7 +98,8 @@ def make_env_amp(env_id: str, seed: int = 0, render_mode: str | None = None,
         env = gym.wrappers.FlattenObservation(env)
 
     env = gym.wrappers.RecordEpisodeStatistics(env)
-    env = gym.wrappers.ClipAction(env)
+    if env.action_space.is_bounded():
+        env = gym.wrappers.ClipAction(env)
 
     # No NormalizeObservation — AMP needs raw obs for feature extraction.
     # No NormalizeReward — task rewards used directly alongside style rewards.
@@ -124,6 +125,11 @@ def _configure_beast_statics(env_module, args) -> None:
     if _BEAST_CONFIGURED:
         return
 
+    # Brain class selection (must be set before env construction)
+    brain_class = getattr(args, "brain_class", "Brain")
+    if hasattr(env_module, "set_brain_class"):
+        env_module.set_brain_class(brain_class)
+
     MODE_MAP = {"idle": 0, "walk": 1, "punch": 2}
     reward_mode = getattr(args, "reward_mode", "idle")
 
@@ -135,12 +141,12 @@ def _configure_beast_statics(env_module, args) -> None:
     if keyframe_file and hasattr(env_module, "set_keyframe_file"):
         env_module.set_keyframe_file(str(Path(keyframe_file).resolve()))
 
-    if reward_mode == "walk" and hasattr(env_module, "set_target_velocity"):
+    if hasattr(env_module, "set_target_velocity"):
         target_vx = getattr(args, "target_vx", 1.5)
         env_module.set_target_velocity(target_vx)
 
-    logging.info("Beast statics configured: reward_mode=%s keyframe=%s",
-                 reward_mode, keyframe_file)
+    logging.info("Beast statics configured: brain_class=%s reward_mode=%s keyframe=%s",
+                 brain_class, reward_mode, keyframe_file)
     _BEAST_CONFIGURED = True
 
 

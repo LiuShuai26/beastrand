@@ -340,6 +340,11 @@ class PPOAMPAlgorithm:
                     fake_trans = self.motion_buffer.normalize(raw_fake)
                     real_trans = self.motion_buffer.normalize(raw_real)
 
+                    # Add noise to prevent discriminator saturation
+                    if args.disc_noise_std > 0:
+                        real_trans = real_trans + args.disc_noise_std * torch.randn_like(real_trans)
+                        fake_trans = fake_trans + args.disc_noise_std * torch.randn_like(fake_trans)
+
                     disc_real_logits = self.discriminator(real_trans)
                     disc_fake_logits = self.discriminator(fake_trans.detach())
 

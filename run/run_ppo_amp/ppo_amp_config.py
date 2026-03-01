@@ -30,6 +30,7 @@ class Args:
     total_env_steps: int = field(default=50_000_000, metadata={"help": "Total environment steps"})
 
     # --- Beast .so env config ---
+    brain_class: str = field(default="Brain", metadata={"help": "Brain class: Brain or VAEBrain"})
     reward_mode: str = field(default="idle", metadata={"help": "Reward mode: idle, walk, or punch"})
     target_vx: float = field(default=1.5, metadata={"help": "Target forward velocity for walk mode"})
 
@@ -79,6 +80,7 @@ class Args:
     disc_grad_penalty_coef: float = field(default=5.0, metadata={"help": "Gradient penalty coefficient"})
     disc_weight_decay: float = field(default=1e-4, metadata={"help": "Discriminator weight decay"})
     disc_update_epochs: int = field(default=1, metadata={"help": "Discriminator epochs per PPO iteration"})
+    disc_noise_std: float = field(default=0.0, metadata={"help": "Gaussian noise std on disc inputs during training (0=off)"})
 
     # --- Logging / checkpoints ---
     logdir: str = field(default="train_logs", metadata={"help": "Root log directory"})
