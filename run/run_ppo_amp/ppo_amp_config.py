@@ -30,7 +30,7 @@ class Args:
     total_env_steps: int = field(default=50_000_000, metadata={"help": "Total environment steps"})
 
     # --- Beast .so env config ---
-    brain_class: str = field(default="Brain", metadata={"help": "Brain class: Brain or VAEBrain"})
+    brain_class: str = field(default="VAEBrain", metadata={"help": "Brain class: Brain or VAEBrain"})
     reward_mode: str = field(default="idle", metadata={"help": "Reward mode: idle, walk, or punch"})
     target_vx: float = field(default=1.5, metadata={"help": "Target forward velocity for walk mode"})
 
@@ -102,7 +102,18 @@ class Args:
         assert self.num_envs_per_worker > 0
         assert self.keyframe_file, "--keyframe-file is required for AMP training"
 
+    # Default AMP slices per brain class
+    _BRAIN_AMP_SLICES = {
+        "Brain":    [(0, 1), (6, 30), (42, 52), (76, 77)],
+        "VAEBrain": [(0, 1), (6, 30), (42, 52)],
+    }
+
     def __post_init__(self):
+        # Auto-select AMP slices based on brain_class (if user didn't override)
+        default_brain_slices = self._BRAIN_AMP_SLICES.get("Brain", [])
+        if self.amp_obs_slices == default_brain_slices and self.brain_class in self._BRAIN_AMP_SLICES:
+            self.amp_obs_slices = self._BRAIN_AMP_SLICES[self.brain_class]
+
         # Compute amp_obs_dim from slices
         if self.amp_obs_dim == 0:
             self.amp_obs_dim = sum(e - s for s, e in self.amp_obs_slices)
