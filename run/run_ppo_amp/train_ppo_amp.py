@@ -45,10 +45,25 @@ def _set_start_method() -> None:
     torch.multiprocessing.set_sharing_strategy("file_system")
 
 
+def _configure_from_so(args: Args) -> None:
+    """Read amp_obs_slices from the Beast .so module (single source of truth)."""
+    try:
+        import importlib
+        env_module = importlib.import_module(args.env_id)
+        if hasattr(env_module, "set_brain_class"):
+            env_module.set_brain_class(args.brain_class)
+        if hasattr(env_module, "amp_obs_slices"):
+            args.amp_obs_slices = [tuple(s) for s in env_module.amp_obs_slices()]
+            args.amp_obs_dim = sum(e - s for s, e in args.amp_obs_slices)
+    except (ImportError, ModuleNotFoundError):
+        pass  # Not a Beast env, use config defaults
+
+
 def main(argv: Optional[list[str]] = None) -> None:
     _set_start_method()
 
     args = tyro.cli(Args, args=argv)
+    _configure_from_so(args)
     args.validate()
 
     run_name = args.make_run_name()
