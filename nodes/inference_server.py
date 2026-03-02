@@ -20,7 +20,7 @@ from typing import Any, Dict, List, Optional
 import numpy as np
 import torch
 
-from nodes.common import child_logging_setup, child_sig_setup
+from nodes.common import child_logging_setup, child_sig_setup, ProfileAccum
 from nodes.logger import child_attach_logger, log_scalar
 from strandbus.strandbus import StrandBus
 from utils.import_utils import get_object_from_path
@@ -32,39 +32,6 @@ REQ_SIZE = struct.calcsize(REQ_FMT)
 
 OP_ACT = 0
 OP_VALUE = 1
-
-
-class _ProfileAccum:
-    """Lightweight cumulative timer for profiling hot loops."""
-    __slots__ = ("_timers", "_counts", "_last_report", "_interval")
-
-    def __init__(self, interval: float = 5.0):
-        self._timers: Dict[str, float] = {}
-        self._counts: Dict[str, int] = {}
-        self._last_report = time.monotonic()
-        self._interval = interval
-
-    def add(self, name: str, dt: float) -> None:
-        self._timers[name] = self._timers.get(name, 0.0) + dt
-        self._counts[name] = self._counts.get(name, 0) + 1
-
-    def maybe_report(self, tag: str) -> Optional[str]:
-        now = time.monotonic()
-        if now - self._last_report < self._interval:
-            return None
-        elapsed = now - self._last_report
-        parts = []
-        for k in sorted(self._timers):
-            total_ms = self._timers[k] * 1000
-            cnt = self._counts[k]
-            avg_ms = total_ms / cnt if cnt else 0
-            parts.append(f"{k}: {total_ms:.0f}ms/{cnt}calls ({avg_ms:.2f}ms avg)")
-        self._timers.clear()
-        self._counts.clear()
-        self._last_report = now
-        if parts:
-            return f"[{tag}] {elapsed:.1f}s | " + ", ".join(parts)
-        return None
 
 
 class InferenceServer:
@@ -89,7 +56,7 @@ class InferenceServer:
         self.bus.open("req", mode="pull", endpoint=f"{base}/infer.req", bind=True)
 
         # -- Profiling --
-        self.prof = _ProfileAccum(interval=5.0)
+        self.prof = ProfileAccum(interval=5.0)
 
     # ------------------------------------------------------------------
     # Core inference loop
@@ -169,6 +136,35 @@ class InferenceServer:
         if val_mask.any():
             self._run_value(requests[val_mask])
 
+    def _gather_obs(self, traj_idxs: np.ndarray, steps: np.ndarray,
+                    ti_t: torch.Tensor, s_t: torch.Tensor) -> Dict[str, Any]:
+        """Vectorized gather of obs (+ LSTM states) from shared tensors."""
+        obs_batch = self.traj_tensors["obs"][ti_t, s_t]
+        if self.device.type != "cpu":
+            obs_batch = obs_batch.to(self.device)
+
+        inputs: Dict[str, Any] = {"obs": obs_batch}
+
+        if self.use_lstm and "rnn_state_h" in self.traj_tensors:
+            h = self.traj_tensors["rnn_state_h"][ti_t, s_t].unsqueeze(0)  # (1, N, hidden)
+            c = self.traj_tensors["rnn_state_c"][ti_t, s_t].unsqueeze(0)
+            if self.device.type != "cpu":
+                h, c = h.to(self.device), c.to(self.device)
+            inputs["rnn_state"] = (h, c)
+            if "mask" in self.traj_tensors:
+                m = self.traj_tensors["mask"][ti_t, s_t]
+                if self.device.type != "cpu":
+                    m = m.to(self.device)
+                inputs["mask"] = m
+
+        return inputs
+
+    def _set_ready_flags(self, worker_ids: np.ndarray, env_idxs: np.ndarray) -> None:
+        """Vectorized ready flag setting."""
+        wi_t = torch.from_numpy(worker_ids.astype(np.int64))
+        ei_t = torch.from_numpy(env_idxs.astype(np.int64))
+        self.ready_flags[wi_t, ei_t] = 1
+
     def _run_act(self, reqs: np.ndarray) -> None:
         """Gather obs -> forward -> scatter action/logp/value -> set ready flags.
 
@@ -181,45 +177,20 @@ class InferenceServer:
         worker_ids = reqs[:, 2]
         env_idxs = reqs[:, 3]
 
-        # Gather obs: list comp + stack (faster than advanced indexing for small batches)
-        obs_tensor = self.traj_tensors["obs"]
-        obs_slices = [obs_tensor[ti, s] for ti, s in zip(traj_idxs, steps)]
-        obs_batch = torch.stack(obs_slices, dim=0)
-        if self.device.type != "cpu":
-            obs_batch = obs_batch.to(self.device)
+        ti_t = torch.from_numpy(traj_idxs.astype(np.int64))
+        s_t = torch.from_numpy(steps.astype(np.int64))
+
+        # Gather obs (vectorized advanced indexing, no Python loop)
+        inputs = self._gather_obs(traj_idxs, steps, ti_t, s_t)
         t_gather = time.monotonic()
         self.prof.add("gather_obs", t_gather - t_start)
-
-        inputs: Dict[str, Any] = {"obs": obs_batch}
-
-        # LSTM: gather rnn states and masks
-        if self.use_lstm and "rnn_state_h" in self.traj_tensors:
-            h_tensor = self.traj_tensors["rnn_state_h"]
-            c_tensor = self.traj_tensors["rnn_state_c"]
-            h_slices = [h_tensor[ti, s] for ti, s in zip(traj_idxs, steps)]
-            c_slices = [c_tensor[ti, s] for ti, s in zip(traj_idxs, steps)]
-            h = torch.stack(h_slices, dim=0).unsqueeze(0)  # (1, N, hidden)
-            c = torch.stack(c_slices, dim=0).unsqueeze(0)
-            if self.device.type != "cpu":
-                h, c = h.to(self.device), c.to(self.device)
-            inputs["rnn_state"] = (h, c)
-            if "mask" in self.traj_tensors:
-                m_tensor = self.traj_tensors["mask"]
-                m_slices = [m_tensor[ti, s] for ti, s in zip(traj_idxs, steps)]
-                m = torch.stack(m_slices, dim=0)
-                if self.device.type != "cpu":
-                    m = m.to(self.device)
-                inputs["mask"] = m
 
         # Forward pass
         out = self.policy.act(inputs, deterministic=False)
         t_fwd = time.monotonic()
         self.prof.add("forward", t_fwd - t_gather)
 
-        # --- Scatter results back: vectorized advanced indexing (no Python loop) ---
-        ti_t = torch.from_numpy(traj_idxs.astype(np.int64))
-        s_t = torch.from_numpy(steps.astype(np.int64))
-
+        # --- Scatter results back: vectorized advanced indexing ---
         actions = out["action"] if self.device.type == "cpu" else out["action"].cpu()
         self.traj_tensors["action"][ti_t, s_t] = actions
 
@@ -254,10 +225,8 @@ class InferenceServer:
         t_scatter = time.monotonic()
         self.prof.add("scatter", t_scatter - t_fwd)
 
-        # Set ready flags (shared memory — workers poll these)
-        ready = self.ready_flags
-        for wid, eid in zip(worker_ids, env_idxs):
-            ready[wid, eid] = 1
+        # Set ready flags (vectorized)
+        self._set_ready_flags(worker_ids, env_idxs)
 
         t_signal = time.monotonic()
         self.prof.add("set_flags", t_signal - t_scatter)
@@ -272,36 +241,16 @@ class InferenceServer:
         worker_ids = reqs[:, 2]
         env_idxs = reqs[:, 3]
 
-        obs_tensor = self.traj_tensors["obs"]
-        obs_slices = [obs_tensor[ti, s] for ti, s in zip(traj_idxs, steps)]
-        obs_batch = torch.stack(obs_slices, dim=0)
-        if self.device.type != "cpu":
-            obs_batch = obs_batch.to(self.device)
+        ti_t = torch.from_numpy(traj_idxs.astype(np.int64))
+        s_t = torch.from_numpy(steps.astype(np.int64))
 
-        inputs: Dict[str, Any] = {"obs": obs_batch}
-
-        if self.use_lstm and "rnn_state_h" in self.traj_tensors:
-            h_tensor = self.traj_tensors["rnn_state_h"]
-            c_tensor = self.traj_tensors["rnn_state_c"]
-            h_slices = [h_tensor[ti, s] for ti, s in zip(traj_idxs, steps)]
-            c_slices = [c_tensor[ti, s] for ti, s in zip(traj_idxs, steps)]
-            h = torch.stack(h_slices, dim=0).unsqueeze(0)
-            c = torch.stack(c_slices, dim=0).unsqueeze(0)
-            if self.device.type != "cpu":
-                h, c = h.to(self.device), c.to(self.device)
-            inputs["rnn_state"] = (h, c)
+        inputs = self._gather_obs(traj_idxs, steps, ti_t, s_t)
 
         v = self.policy.value(inputs)
         values = v if self.device.type == "cpu" else v.cpu()
-
-        ti_t = torch.from_numpy(traj_idxs.astype(np.int64))
-        s_t = torch.from_numpy(steps.astype(np.int64))
         self.traj_tensors["value"][ti_t, s_t] = values
 
-        # Set ready flags
-        ready = self.ready_flags
-        for wid, eid in zip(worker_ids, env_idxs):
-            ready[wid, eid] = 1
+        self._set_ready_flags(worker_ids, env_idxs)
 
 
 def main(ctx, logger_queue) -> None:

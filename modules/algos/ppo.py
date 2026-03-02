@@ -110,8 +110,7 @@ def compute_gae(ctx, view) -> None:
     view: Dict[str, np.ndarray] with keys: reward, done, value, advantage, return
     """
     T = getattr(ctx.args, "rollout", getattr(ctx.args, "rollout_t", 64))
-    # Support both SlotViews (old: view.arrays) and plain dict (new)
-    arrays = view.arrays if hasattr(view, "arrays") else view
+    arrays = view
     adv = np.zeros_like(arrays["advantage"], dtype=np.float32)
     last_adv = 0.0
     for t in range(T - 1, -1, -1):
@@ -153,7 +152,6 @@ def ppo_update(
 
     clipfracs = []
     approx_kl = torch.tensor(0.0, device=device)
-    old_approx_kl = torch.tensor(0.0, device=device)
 
     n_mb = N / ctx.args.minibatch_size
     b_inds = np.arange(b_obs.shape[0])
@@ -171,7 +169,6 @@ def ppo_update(
             ratio = logratio.exp()
 
             with torch.no_grad():
-                old_approx_kl = (-logratio).mean()
                 approx_kl = ((ratio - 1) - logratio).mean()
                 clipfracs.append(((ratio - 1.0).abs() > ctx.args.ppo_clip_range).float().mean().item())
 

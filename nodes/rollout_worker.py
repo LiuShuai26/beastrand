@@ -15,13 +15,13 @@ import struct
 import time
 from dataclasses import dataclass
 from queue import Empty
-from typing import Dict, List, Optional
+from typing import Dict, List
 
 import numpy as np
 import torch
 
 from modules.envs.make_env import make_env
-from nodes.common import child_logging_setup, child_sig_setup
+from nodes.common import child_logging_setup, child_sig_setup, ProfileAccum
 from nodes.logger import child_attach_logger, log_scalar
 from strandbus.strandbus import StrandBus
 
@@ -44,39 +44,6 @@ class EnvState:
     episode_reward: float = 0.0
     episode_length: int = 0
     done: bool = False
-
-
-class _ProfileAccum:
-    """Lightweight cumulative timer for profiling hot loops."""
-    __slots__ = ("_timers", "_counts", "_last_report", "_interval")
-
-    def __init__(self, interval: float = 5.0):
-        self._timers: Dict[str, float] = {}
-        self._counts: Dict[str, int] = {}
-        self._last_report = time.monotonic()
-        self._interval = interval
-
-    def add(self, name: str, dt: float) -> None:
-        self._timers[name] = self._timers.get(name, 0.0) + dt
-        self._counts[name] = self._counts.get(name, 0) + 1
-
-    def maybe_report(self, tag: str) -> Optional[str]:
-        now = time.monotonic()
-        if now - self._last_report < self._interval:
-            return None
-        elapsed = now - self._last_report
-        parts = []
-        for k in sorted(self._timers):
-            total_ms = self._timers[k] * 1000
-            cnt = self._counts[k]
-            avg_ms = total_ms / cnt if cnt else 0
-            parts.append(f"{k}: {total_ms:.0f}ms/{cnt}calls ({avg_ms:.2f}ms avg)")
-        self._timers.clear()
-        self._counts.clear()
-        self._last_report = now
-        if parts:
-            return f"[{tag}] {elapsed:.1f}s | " + ", ".join(parts)
-        return None
 
 
 class RolloutWorker:
@@ -112,7 +79,7 @@ class RolloutWorker:
         self.bus.open("filled_out", mode="push", endpoint=f"{base}/data.filled.in", bind=False)
 
         # --- Profiling (only worker 0) ---
-        self.prof = _ProfileAccum(interval=5.0) if worker_idx == 0 else None
+        self.prof = ProfileAccum(interval=5.0) if worker_idx == 0 else None
 
         # --- Resolve env factory (configurable via args.make_env_path) ---
         _make_env_path = getattr(args, "make_env_path", None)

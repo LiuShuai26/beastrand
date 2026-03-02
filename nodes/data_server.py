@@ -11,7 +11,6 @@ routing for self-play).
 from __future__ import annotations
 
 import logging
-import zmq
 
 from nodes.common import child_logging_setup, child_sig_setup
 from nodes.logger import child_attach_logger

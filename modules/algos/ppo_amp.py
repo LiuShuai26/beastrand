@@ -111,7 +111,7 @@ class PPOAMPAlgorithm:
         advantage are deferred to :meth:`prepare_batch_finalize` which
         runs a single batched discriminator forward for many trajectories.
         """
-        arrays = view.arrays if hasattr(view, "arrays") else view
+        arrays = view
         obs_np = arrays["obs"]  # (T+1, obs_dim)
         amp_obs_full = self._extract_amp_obs(obs_np)  # (T+1, amp_obs_dim)
         transitions = np.concatenate(

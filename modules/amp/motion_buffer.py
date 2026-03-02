@@ -185,12 +185,3 @@ class AMPMotionBuffer:
         """
         indices = torch.randint(0, self.num_transitions, (batch_size,))
         return self.amp_transitions[indices]
-
-    def sample_frames(self, batch_size):
-        """Sample random single-frame AMP observations (for debugging).
-
-        Returns:
-            Tensor of shape (batch_size, obs_dim) on self.device.
-        """
-        indices = torch.randint(0, self.num_frames, (batch_size,))
-        return self.amp_obs[indices]

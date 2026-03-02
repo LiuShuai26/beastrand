@@ -71,11 +71,9 @@ def main(ctx, logger_queue) -> None:
     meta = {"schema": schema, "T": T}
     batch_size = args.batch_size
     buffer_size = getattr(args, "replay_capacity", batch_size)
-    buffer_mode = getattr(args, "buffer_mode", "fullpass")
     learning_starts = getattr(args, "learning_starts", batch_size)
 
-    batch_buf = BatchBuffer(meta=meta, buffer_mode=buffer_mode,
-                            batch_size=batch_size, buffer_size=buffer_size)
+    batch_buf = BatchBuffer(meta=meta, batch_size=batch_size, buffer_size=buffer_size)
     buf_lock = threading.Lock()
     have_batch = threading.Condition(buf_lock)
 
@@ -114,41 +112,45 @@ def main(ctx, logger_queue) -> None:
         pending = []  # list of (traj_idx, view_dict)
 
         while not ctx.stop_event.is_set():
-            # Poll with timeout so we can check stop_event and flush
-            # partial batches promptly during shutdown.
+            # Poll with timeout so we can check stop_event periodically
             ready_socks = bus.poll(timeout_ms=100)
             if "filled_in" not in ready_socks:
                 continue
+
+            # Drain all available filled traj IDs at once
             try:
-                raw = bus.recv("filled_in", noblock=True)
+                raw_msgs = bus.recv_many("filled_in")
             except Exception:
                 continue
 
-            traj_idx = struct.unpack("<i", raw)[0]
+            notify_needed = False
+            for raw in raw_msgs:
+                traj_idx = struct.unpack("<i", raw)[0]
 
-            # Get numpy views into this trajectory (zero-copy)
-            view = buffer_mgr.slot_as_numpy(traj_idx)
+                # Get numpy views into this trajectory (zero-copy)
+                view = buffer_mgr.slot_as_numpy(traj_idx)
 
-            # Phase 1: lightweight per-traj prep (numpy only for batched path,
-            # or full GAE computation for the legacy path)
-            algorithm.prepare_batch(view)
+                # Phase 1: lightweight per-traj prep (numpy only for batched path,
+                # or full GAE computation for the legacy path)
+                algorithm.prepare_batch(view)
 
-            if _use_batched_finalize:
-                # Accumulate until batch_trigger, then flush all at once
-                pending.append((traj_idx, view))
-                if len(pending) >= _batch_trigger:
-                    _flush_pending(pending)
-            else:
-                # Legacy path (plain PPO): append + recycle immediately
-                with buf_lock:
-                    batch_buf.append_slot(view)
-                    ready = batch_buf.valid_steps >= learning_starts
+                if _use_batched_finalize:
+                    # Accumulate until batch_trigger, then flush all at once
+                    pending.append((traj_idx, view))
+                    if len(pending) >= _batch_trigger:
+                        _flush_pending(pending)
+                else:
+                    # Plain PPO: append + recycle immediately
+                    with buf_lock:
+                        batch_buf.append_slot(view)
+                        if batch_buf.valid_steps >= learning_starts:
+                            notify_needed = True
 
-                buffer_mgr.traj_buffer_queue.put(traj_idx)
+                    buffer_mgr.traj_buffer_queue.put(traj_idx)
 
-                if ready:
-                    with have_batch:
-                        have_batch.notify()
+            if notify_needed:
+                with have_batch:
+                    have_batch.notify()
 
         # Flush any remaining trajectories on shutdown so traj buffers
         # are recycled and workers blocked on traj_queue.get() unblock.
@@ -157,6 +159,8 @@ def main(ctx, logger_queue) -> None:
 
     ing_thread = threading.Thread(target=ingest_worker, name="ingest", daemon=True)
     ing_thread.start()
+
+    record_cls = get_object_from_path(args.data_record_path)
 
     logging.info("[learner] ready (device=%s, batch_size=%d, T=%d)", device, batch_size, T)
 
@@ -203,7 +207,6 @@ def main(ctx, logger_queue) -> None:
             if N == 0:
                 continue
 
-            record_cls = get_object_from_path(args.data_record_path)
             batch = record_cls.build_batch(ctx, view)
 
             # Policy lag check
@@ -211,7 +214,7 @@ def main(ctx, logger_queue) -> None:
                 avg_version = int(np.mean(view["model_version"]))
                 policy_lag = int(buffer_mgr.policy_version.item()) - avg_version
                 max_lag = getattr(args, "max_policy_lag", getattr(args, "policy_lag", 100))
-                if getattr(args, "lag_controll", False) and policy_lag > max_lag:
+                if getattr(args, "lag_control", False) and policy_lag > max_lag:
                     time.sleep(0.1)
                     continue
             else:

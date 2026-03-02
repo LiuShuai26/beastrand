@@ -105,7 +105,6 @@ def ppo_lstm_update(
 
     clipfracs = []
     approx_kl = torch.tensor(0.0, device=device)
-    old_approx_kl = torch.tensor(0.0, device=device)
 
     seq_inds = np.arange(total_sequences)
     n_mb = total_sequences / seq_batch_size
@@ -156,7 +155,6 @@ def ppo_lstm_update(
             ratio = logratio.exp()
 
             with torch.no_grad():
-                old_approx_kl = (-logratio).mean()
                 approx_kl = ((ratio - 1) - logratio).mean()
                 clipfracs.append(((ratio - 1.0).abs() > ctx.args.ppo_clip_range).float().mean().item())
 

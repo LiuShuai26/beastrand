@@ -1,6 +1,6 @@
 # ppo_config.py
 from dataclasses import dataclass, field
-from typing import Literal, Optional, List
+from typing import Optional, List
 import time
 
 @dataclass
@@ -10,8 +10,6 @@ class Args:
     policy_path: str = field(default="modules.policy.ppo_policy.PPOPolicy", init=False)
     algorithm_path: str = field(default="modules.algos.ppo.PPOAlgorithm", init=False)
 
-    buffer_mode: str = field(default="fullpass", init=False)
-    compute_gae: bool = field(default=True, init=False)
     bootstrap_value: bool = field(default=True, init=False)
 
     make_env_path: Optional[str] = field(default=None, metadata={"help": "Dotted path to custom env factory (e.g. modules.envs.make_env_amp.make_env_amp)"})
@@ -22,7 +20,7 @@ class Args:
     seed: int = field(default=1, metadata={"help": "Random seed"})
     total_env_steps: int = field(default=2_000_000, metadata={"help": "Total environment steps"})  # note: 1_000_000
 
-    lag_controll: bool = field(default=False, metadata={"help": "Lag controll flag"})
+    lag_control: bool = field(default=False, metadata={"help": "Lag control flag"})
     policy_lag: int = field(default=1, metadata={"help": "Number of updates between inference weights and learner weights"})
 
     # Topology

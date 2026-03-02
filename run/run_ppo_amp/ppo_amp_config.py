@@ -18,8 +18,6 @@ class Args:
     algorithm_path: str = "modules.algos.ppo_amp.PPOAMPAlgorithm"
     make_env_path: str = "modules.envs.make_env_amp.make_env_amp"
 
-    buffer_mode: str = "fullpass"
-    compute_gae: bool = True
     bootstrap_value: bool = True
 
     device: str = field(default="cpu", metadata={"help": "Device to run on (cpu/cuda)"})
@@ -34,7 +32,7 @@ class Args:
     reward_mode: str = field(default="idle", metadata={"help": "Reward mode: idle, walk, or punch"})
     target_vx: float = field(default=1.5, metadata={"help": "Target forward velocity for walk mode"})
 
-    lag_controll: bool = field(default=False, metadata={"help": "Lag control flag"})
+    lag_control: bool = field(default=False, metadata={"help": "Lag control flag"})
     policy_lag: int = field(default=1, metadata={"help": "Max policy lag"})
 
     # --- Topology ---
@@ -120,3 +118,4 @@ class Args:
             raise ValueError("learning_starts must be at least as large as replay_capacity")
         if self.learning_starts % self.batch_size != 0:
             raise ValueError("learning_starts must be a multiple of batch_size")
+        self.validate()
