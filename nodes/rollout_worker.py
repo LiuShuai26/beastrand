@@ -20,7 +20,7 @@ import struct
 import time
 from dataclasses import dataclass
 from queue import Empty
-from typing import Dict, List
+from typing import Dict, List, Optional
 
 import numpy as np
 import torch
@@ -105,72 +105,114 @@ class RolloutWorker:
                 env=env, obs=obs, traj_idx=traj_idx, env_idx=ei,
             ))
 
-        # --- Organize envs into splits for batched inference requests ---
-        self.num_splits = getattr(args, "worker_num_splits", 1)
-        if self.num_splits <= 1:
-            self.splits: List[List[EnvState]] = [self.envs]
-        else:
+        # --- Organize envs into splits for pipelined inference ---
+        # 0 = per-env send (original behavior, best for light envs)
+        # 2+ = group envs into N splits, burst-send per split
+        self.num_splits = getattr(args, "worker_num_splits", 0)
+        if self.num_splits >= 2:
             eps = self.num_envs // self.num_splits
-            self.splits = [self.envs[i * eps:(i + 1) * eps]
-                           for i in range(self.num_splits)]
+            self.splits: Optional[List[List[EnvState]]] = [
+                self.envs[i * eps:(i + 1) * eps]
+                for i in range(self.num_splits)]
+        else:
+            self.splits = None
 
     # ------------------------------------------------------------------
-    # Core loop — per-split two-phase polling
+    # Core loop
     # ------------------------------------------------------------------
 
     def run(self):
-        logging.info("[worker:%d] ready (%d envs, %d splits, T=%d)",
-                     self.worker_idx, self.num_envs, self.num_splits, self.T)
+        logging.info("[worker:%d] ready (%d envs, splits=%s, T=%d)",
+                     self.worker_idx, self.num_envs,
+                     self.num_splits if self.splits else "off", self.T)
 
         # Initial: send inference requests for all envs
         for es in self.envs:
             self._send_request(es, OP_ACT)
 
         try:
-            while not self.ctx.stop_event.is_set():
-                t0 = time.monotonic()
-                stepped_any = False
-
-                for split in self.splits:
-                    # Phase 1: step all ready envs in this split
-                    stepped: List[EnvState] = []
-                    for es in split:
-                        if not es.pending:
-                            continue
-                        if not self.ready_flags[self.worker_idx, es.env_idx]:
-                            continue
-
-                        self.ready_flags[self.worker_idx, es.env_idx] = 0
-                        t1 = time.monotonic()
-                        self._advance_single(es)
-                        t2 = time.monotonic()
-
-                        if self.prof:
-                            self.prof.add("advance", t2 - t1)
-
-                        if es.step < self.T:
-                            stepped.append(es)
-
-                    # Phase 2: burst-send all inference requests for this split
-                    if stepped:
-                        t_send = time.monotonic()
-                        for es in stepped:
-                            self._send_request(es, OP_ACT)
-                        stepped_any = True
-                        if self.prof:
-                            self.prof.add("send_req", time.monotonic() - t_send)
-
-                if self.prof:
-                    t_end = time.monotonic()
-                    if not stepped_any:
-                        self.prof.add("idle_spin", t_end - t0)
-                    report = self.prof.maybe_report(f"worker:{self.worker_idx}")
-                    if report:
-                        logging.info(report)
-
+            if self.splits:
+                self._loop_split()
+            else:
+                self._loop_per_env()
         finally:
             self.bus.close_all()
             logging.info("[worker:%d] exiting", self.worker_idx)
+
+    def _loop_per_env(self):
+        """Original per-env loop: advance → send immediately."""
+        while not self.ctx.stop_event.is_set():
+            t0 = time.monotonic()
+            stepped_any = False
+
+            for es in self.envs:
+                if not es.pending:
+                    continue
+                if not self.ready_flags[self.worker_idx, es.env_idx]:
+                    continue
+
+                self.ready_flags[self.worker_idx, es.env_idx] = 0
+                t1 = time.monotonic()
+                self._advance_single(es)
+                t2 = time.monotonic()
+
+                if self.prof:
+                    self.prof.add("advance", t2 - t1)
+
+                if es.step < self.T:
+                    self._send_request(es, OP_ACT)
+                stepped_any = True
+
+            if self.prof:
+                t_end = time.monotonic()
+                if not stepped_any:
+                    self.prof.add("idle_spin", t_end - t0)
+                report = self.prof.maybe_report(f"worker:{self.worker_idx}")
+                if report:
+                    logging.info(report)
+
+    def _loop_split(self):
+        """Split loop: step all envs in a split, then burst-send."""
+        while not self.ctx.stop_event.is_set():
+            t0 = time.monotonic()
+            stepped_any = False
+
+            for split in self.splits:
+                # Phase 1: step all ready envs in this split
+                stepped: List[EnvState] = []
+                for es in split:
+                    if not es.pending:
+                        continue
+                    if not self.ready_flags[self.worker_idx, es.env_idx]:
+                        continue
+
+                    self.ready_flags[self.worker_idx, es.env_idx] = 0
+                    t1 = time.monotonic()
+                    self._advance_single(es)
+                    t2 = time.monotonic()
+
+                    if self.prof:
+                        self.prof.add("advance", t2 - t1)
+
+                    if es.step < self.T:
+                        stepped.append(es)
+
+                # Phase 2: burst-send all inference requests for this split
+                if stepped:
+                    t_send = time.monotonic()
+                    for es in stepped:
+                        self._send_request(es, OP_ACT)
+                    stepped_any = True
+                    if self.prof:
+                        self.prof.add("send_req", time.monotonic() - t_send)
+
+            if self.prof:
+                t_end = time.monotonic()
+                if not stepped_any:
+                    self.prof.add("idle_spin", t_end - t0)
+                report = self.prof.maybe_report(f"worker:{self.worker_idx}")
+                if report:
+                    logging.info(report)
 
     # ------------------------------------------------------------------
     # Send inference request (single env)
