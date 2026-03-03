@@ -1,12 +1,17 @@
 """
 RolloutWorker (v3): async per-env rollout via shared memory flags.
 
-Each worker manages ``num_envs_per_worker`` environments. All envs operate
-independently — no splits, no synchronous waiting. The InferenceServer sets
-``ready_flags[worker_idx, env_idx] = 1`` after writing action/logp/value into
-shared tensors, and the worker polls these flags to advance ready envs.
+Each worker manages ``num_envs_per_worker`` environments. When
+``worker_num_splits > 1``, envs are divided into splits. Each split is
+processed in two phases: (1) step all ready envs, (2) burst-send all
+inference requests together. This creates temporal batching — the
+inference server receives requests in larger bursts for more efficient
+GPU utilization.  With ``worker_num_splits=1`` (default), behavior is
+identical to the unsplit version.
 
-Worker never blocks: it always has some env to step.
+The InferenceServer sets ``ready_flags[worker_idx, env_idx] = 1`` after
+writing action/logp/value into shared tensors, and the worker polls these
+flags to advance ready envs.
 """
 from __future__ import annotations
 
@@ -89,7 +94,7 @@ class RolloutWorker:
         else:
             _make_env = make_env
 
-        # --- Create all environments (flat, no splits) ---
+        # --- Create all environments ---
         self.envs: List[EnvState] = []
         for ei in range(self.num_envs):
             seed = args.seed + worker_idx * self.num_envs + ei
@@ -100,13 +105,22 @@ class RolloutWorker:
                 env=env, obs=obs, traj_idx=traj_idx, env_idx=ei,
             ))
 
+        # --- Organize envs into splits for batched inference requests ---
+        self.num_splits = getattr(args, "worker_num_splits", 1)
+        if self.num_splits <= 1:
+            self.splits: List[List[EnvState]] = [self.envs]
+        else:
+            eps = self.num_envs // self.num_splits
+            self.splits = [self.envs[i * eps:(i + 1) * eps]
+                           for i in range(self.num_splits)]
+
     # ------------------------------------------------------------------
-    # Core loop — async per-env polling
+    # Core loop — per-split two-phase polling
     # ------------------------------------------------------------------
 
     def run(self):
-        logging.info("[worker:%d] ready (%d envs, async, T=%d)",
-                     self.worker_idx, self.num_envs, self.T)
+        logging.info("[worker:%d] ready (%d envs, %d splits, T=%d)",
+                     self.worker_idx, self.num_envs, self.num_splits, self.T)
 
         # Initial: send inference requests for all envs
         for es in self.envs:
@@ -117,34 +131,34 @@ class RolloutWorker:
                 t0 = time.monotonic()
                 stepped_any = False
 
-                for es in self.envs:
-                    if not es.pending:
-                        continue
-                    if not self.ready_flags[self.worker_idx, es.env_idx]:
-                        continue
+                for split in self.splits:
+                    # Phase 1: step all ready envs in this split
+                    stepped: List[EnvState] = []
+                    for es in split:
+                        if not es.pending:
+                            continue
+                        if not self.ready_flags[self.worker_idx, es.env_idx]:
+                            continue
 
-                    # Clear flag and advance
-                    self.ready_flags[self.worker_idx, es.env_idx] = 0
-                    t1 = time.monotonic()
+                        self.ready_flags[self.worker_idx, es.env_idx] = 0
+                        t1 = time.monotonic()
+                        self._advance_single(es)
+                        t2 = time.monotonic()
 
-                    self._advance_single(es)
-                    t2 = time.monotonic()
+                        if self.prof:
+                            self.prof.add("advance", t2 - t1)
 
-                    if es.step >= self.T:
-                        # _finalize_trajectory failed to get a new buffer;
-                        # es.step is still T so sending an ACT request would
-                        # cause an IndexError in the inference server.  Skip
-                        # this env — es.pending stays False so it won't be
-                        # polled again.
-                        continue
-                    self._send_request(es, OP_ACT)
-                    t3 = time.monotonic()
+                        if es.step < self.T:
+                            stepped.append(es)
 
-                    stepped_any = True
-
-                    if self.prof:
-                        self.prof.add("advance", t2 - t1)
-                        self.prof.add("send_req", t3 - t2)
+                    # Phase 2: burst-send all inference requests for this split
+                    if stepped:
+                        t_send = time.monotonic()
+                        for es in stepped:
+                            self._send_request(es, OP_ACT)
+                        stepped_any = True
+                        if self.prof:
+                            self.prof.add("send_req", time.monotonic() - t_send)
 
                 if self.prof:
                     t_end = time.monotonic()

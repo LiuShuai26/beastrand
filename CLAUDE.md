@@ -84,13 +84,16 @@ Config dataclasses (`Args`) specify `data_record_path`, `policy_path`, `algorith
 
 Key module interfaces:
 - **BasePolicy** (modules/policy/base_policy.py) — `nn.Module`; must implement `act()`, optionally `value()`, `evaluate_actions()`
-- **Algorithm** (modules/algos/base.py) — protocol with `prepare_batch()` and `update()`
+- **Algorithm** — protocol with `prepare_batch()` and `update()` (no base class; each algo is self-contained, CleanRL-style)
 - **DataRecord** (modules/dataset/data_record/) — defines `alloc_specs()` for tensor layout and `build_batch()` for training tensors
 
 ### Key conventions
 
 - All child processes call `child_sig_setup()` (ignore SIGINT) and `child_logging_setup()` on start
+- Shared entry-point boilerplate (`setup_logging`, `set_start_method`) lives in `run/common.py`
+- Shared node utilities (`ProfileAccum`, `child_sig_setup`, `child_logging_setup`) live in `nodes/common.py`
 - Logging uses a centralized logger process via `log_scalar()` → TensorBoard
 - Process start method is `spawn` (required for CUDA safety)
 - Torch sharing strategy is `file_system` (avoids fd limits)
 - IPC endpoints are under `ipc:///tmp/beatstrand/<run_name>/` (unique per run, enabling concurrent training)
+- StrandBus supports PUSH/PULL and PUB/SUB only (no ROUTER/DEALER)

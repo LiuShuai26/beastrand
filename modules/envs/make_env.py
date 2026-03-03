@@ -48,7 +48,8 @@ def make_env(env_id: str, seed: int = 0, render_mode: str | None = None,
     env = gym.make(env_id, render_mode=render_mode)
     env = gym.wrappers.FlattenObservation(env)  # deal with dm_control's Dict observation space
     env = gym.wrappers.RecordEpisodeStatistics(env)
-    env = gym.wrappers.ClipAction(env)
+    if isinstance(env.action_space, gym.spaces.Box):
+        env = gym.wrappers.ClipAction(env)
     env = gym.wrappers.NormalizeObservation(env)
     env = gym.wrappers.TransformObservation(env, lambda obs: np.clip(obs, -10, 10), observation_space=env.observation_space)
     env = gym.wrappers.NormalizeReward(env, gamma=0.99)
