@@ -40,7 +40,7 @@ class PPOLSTMAlgorithm:
 def _validate_recurrence(ctx, N: int) -> int:
     recurrence = int(getattr(ctx.args, "recurrence", -1))
     if recurrence <= 0:
-        recurrence = int(getattr(ctx.args, "rollout", getattr(ctx.args, "rollout_t", 1)))
+        recurrence = int(ctx.args.rollout)
     recurrence = max(1, min(recurrence, max(1, N)))
     if ctx.args.minibatch_size % recurrence != 0:
         raise ValueError("minibatch_size must be divisible by recurrence for LSTM training")

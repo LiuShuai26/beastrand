@@ -194,9 +194,9 @@ class Manager:
                 self.args.amp_obs_dim = sum(e - s for s, e in so_slices)
 
         # 2. Compute topology
-        num_workers = getattr(self.args, "num_workers", getattr(self.args, "num_actors", 8))
-        num_envs_per_worker = getattr(self.args, "num_envs_per_worker", 2)
-        T = getattr(self.args, "rollout", getattr(self.args, "rollout_t", 64))
+        num_workers = self.args.num_workers
+        num_envs_per_worker = self.args.num_envs_per_worker
+        T = self.args.rollout
         num_traj = num_workers * num_envs_per_worker
 
         # 3. Create BufferMgr (shared tensors + queue + async ready flags)

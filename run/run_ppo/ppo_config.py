@@ -20,8 +20,7 @@ class Args:
     seed: int = field(default=1, metadata={"help": "Random seed"})
     total_env_steps: int = field(default=2_000_000, metadata={"help": "Total environment steps"})  # note: 1_000_000
 
-    lag_control: bool = field(default=False, metadata={"help": "Lag control flag"})
-    policy_lag: int = field(default=1, metadata={"help": "Number of updates between inference weights and learner weights"})
+    max_policy_lag: int = field(default=0, metadata={"help": "Discard trajectories with policy lag > this (0 = disabled)"})
 
     # Topology
     num_workers: int = field(default=8, metadata={"help": "Number of rollout worker processes"})

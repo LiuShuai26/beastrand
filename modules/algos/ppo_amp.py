@@ -25,6 +25,7 @@ import torch.optim as optim
 from modules.amp.discriminator import AMPDiscriminator
 from modules.amp.motion_buffer import AMPMotionBuffer
 from modules.amp.rewards import compute_disc_loss, compute_style_reward
+from utils.tensor_utils import to_torch
 
 G = 2  # reward groups: 0 = task, 1 = style
 
@@ -135,7 +136,7 @@ class PPOAMPAlgorithm:
                    not yet copied into BatchBuffer).
         """
         args = self.ctx.args
-        T = getattr(args, "rollout", 64)
+        T = args.rollout
         n_traj = len(views)
         if n_traj == 0:
             return
@@ -162,6 +163,7 @@ class PPOAMPAlgorithm:
 
         for i, view in enumerate(views):
             done_np = view["done"]  # (T,)
+            terminated_np = view["terminated"]  # (T,)
             valid_mask = (done_np == 0).astype(np.float32)
             style_rewards = style_rewards_np[i] * valid_mask
 
@@ -175,7 +177,7 @@ class PPOAMPAlgorithm:
             for g in range(G):
                 last_adv = 0.0
                 for t in range(T - 1, -1, -1):
-                    nonterminal = 1.0 - float(done_np[t])
+                    nonterminal = 1.0 - float(terminated_np[t])
                     delta = (
                         rewards_per_group[g][t]
                         + gamma * nonterminal * value_g[t + 1, g]
@@ -221,7 +223,7 @@ class PPOAMPAlgorithm:
 
         policy.train()
 
-        data = _to_torch(batch, device)
+        data = to_torch(batch, device)
         b_obs = data["obs"]
         b_actions = data["act"]
         b_logprobs = data["logp"].float()
@@ -303,7 +305,7 @@ class PPOAMPAlgorithm:
         args = self.ctx.args
         device = self.device
 
-        data = _to_torch(batch, device)
+        data = to_torch(batch, device)
         all_transitions = data["amp_transition"]  # (N, transition_dim)
         dones = data["done"].float()               # (N,)
 
@@ -480,15 +482,3 @@ def _ensure_single_onnx_file(onnx_path: str) -> None:
     _os.remove(data_path)
 
 
-def _to_torch(batch: Dict[str, Any], device: torch.device) -> Dict[str, torch.Tensor]:
-    out: Dict[str, torch.Tensor] = {}
-    for k, v in batch.items():
-        if isinstance(v, torch.Tensor):
-            out[k] = v.to(device)
-        else:
-            if k in ("act",):
-                t = torch.from_numpy(v)
-            else:
-                t = torch.from_numpy(v).float()
-            out[k] = t.to(device)
-    return out

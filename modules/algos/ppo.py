@@ -27,6 +27,8 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 
+from utils.tensor_utils import to_torch  # noqa: F401  (re-exported for ppo_lstm)
+
 
 class PPOAlgorithm:
     def __init__(self, ctx, policy, opt, device):
@@ -83,21 +85,6 @@ def _ensure_single_onnx_file(onnx_path: str) -> None:
     os.remove(data_path)
 
 
-def to_torch(batch: Dict[str, Any], device: torch.device) -> Dict[str, torch.Tensor]:
-    out: Dict[str, torch.Tensor] = {}
-    for k, v in batch.items():
-        if isinstance(v, torch.Tensor):
-            out[k] = v.to(device)
-        else:
-            # assume numpy
-            if k in ("act",):
-                # int or float — keep dtype
-                t = torch.from_numpy(v)
-            else:
-                t = torch.from_numpy(v).float()
-            out[k] = t.to(device)
-    return out
-
 
 def normalize_advantages(adv: torch.Tensor) -> torch.Tensor:
     return (adv - adv.mean()) / (adv.std(unbiased=False) + 1e-8)
@@ -107,14 +94,14 @@ def compute_gae(ctx, view) -> None:
     """
     Compute GAE advantages and returns, writing results into the view dict.
 
-    view: Dict[str, np.ndarray] with keys: reward, done, value, advantage, return
+    view: Dict[str, np.ndarray] with keys: reward, terminated, value, advantage, return
     """
-    T = getattr(ctx.args, "rollout", getattr(ctx.args, "rollout_t", 64))
+    T = ctx.args.rollout
     arrays = view
     adv = np.zeros_like(arrays["advantage"], dtype=np.float32)
     last_adv = 0.0
     for t in range(T - 1, -1, -1):
-        nonterminal = 1.0 - float(arrays["done"][t])
+        nonterminal = 1.0 - float(arrays["terminated"][t])
         delta = arrays["reward"][t] + ctx.args.gamma * nonterminal * float(arrays["value"][t + 1]) - float(
             arrays["value"][t])
         last_adv = delta + ctx.args.gamma * ctx.args.lam * nonterminal * last_adv

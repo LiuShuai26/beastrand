@@ -85,6 +85,7 @@ def main(ctx, logger_queue) -> None:
     # forward pass runs on one large batch instead of N small ones.
     _use_batched_finalize = hasattr(algorithm, "prepare_batch_finalize")
     _batch_trigger = max(1, batch_size // T) if _use_batched_finalize else 1
+    _max_policy_lag = getattr(args, "max_policy_lag", 0)
 
     def _flush_pending(pending):
         """Run batched finalize, append all views, recycle traj buffers."""
@@ -108,8 +109,20 @@ def main(ctx, logger_queue) -> None:
             with have_batch:
                 have_batch.notify()
 
+    def _is_stale(view) -> bool:
+        """Check if trajectory data is too old to train on."""
+        if _max_policy_lag <= 0:
+            return False
+        if "model_version" not in view:
+            return False
+        avg_ver = int(np.mean(view["model_version"]))
+        lag = int(buffer_mgr.policy_version.item()) - avg_ver
+        return lag > _max_policy_lag
+
     def ingest_worker():
         pending = []  # list of (traj_idx, view_dict)
+        _discarded = 0
+        _last_discard_log = time.monotonic()
 
         while not ctx.stop_event.is_set():
             # Poll with timeout so we can check stop_event periodically
@@ -129,6 +142,12 @@ def main(ctx, logger_queue) -> None:
 
                 # Get numpy views into this trajectory (zero-copy)
                 view = buffer_mgr.slot_as_numpy(traj_idx)
+
+                # Discard stale trajectories (backpressure)
+                if _is_stale(view):
+                    buffer_mgr.traj_buffer_queue.put(traj_idx)
+                    _discarded += 1
+                    continue
 
                 # Phase 1: lightweight per-traj prep (numpy only for batched path,
                 # or full GAE computation for the legacy path)
@@ -151,6 +170,14 @@ def main(ctx, logger_queue) -> None:
             if notify_needed:
                 with have_batch:
                     have_batch.notify()
+
+            # Log discard stats periodically
+            now = time.monotonic()
+            if _discarded > 0 and now - _last_discard_log > 10.0:
+                logging.info("[learner] discarded %d stale trajectories (max_policy_lag=%d)",
+                             _discarded, _max_policy_lag)
+                _discarded = 0
+                _last_discard_log = now
 
         # Flush any remaining trajectories on shutdown so traj buffers
         # are recycled and workers blocked on traj_queue.get() unblock.
@@ -209,14 +236,10 @@ def main(ctx, logger_queue) -> None:
 
             batch = record_cls.build_batch(ctx, view)
 
-            # Policy lag check
+            # Policy lag (for logging only — stale data is discarded in ingest)
             if "model_version" in view:
                 avg_version = int(np.mean(view["model_version"]))
                 policy_lag = int(buffer_mgr.policy_version.item()) - avg_version
-                max_lag = getattr(args, "max_policy_lag", getattr(args, "policy_lag", 100))
-                if getattr(args, "lag_control", False) and policy_lag > max_lag:
-                    time.sleep(0.1)
-                    continue
             else:
                 policy_lag = 0
 

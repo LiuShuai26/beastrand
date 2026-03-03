@@ -2,12 +2,12 @@
 RolloutWorker (v3): async per-env rollout via shared memory flags.
 
 Each worker manages ``num_envs_per_worker`` environments. When
-``worker_num_splits > 1``, envs are divided into splits. Each split is
+``worker_num_splits >= 2``, envs are divided into splits. Each split is
 processed in two phases: (1) step all ready envs, (2) burst-send all
 inference requests together. This creates temporal batching — the
 inference server receives requests in larger bursts for more efficient
-GPU utilization.  With ``worker_num_splits=1`` (default), behavior is
-identical to the unsplit version.
+GPU utilization.  With ``worker_num_splits=0`` (default), each env sends
+its inference request immediately after stepping (original per-env behavior).
 
 The InferenceServer sets ``ready_flags[worker_idx, env_idx] = 1`` after
 writing action/logp/value into shared tensors, and the worker polls these
@@ -60,8 +60,8 @@ class RolloutWorker:
         self.T = args.rollout
         self.num_envs = getattr(args, "num_envs_per_worker", 2)
 
-        self.use_lstm = bool(getattr(args, "use_rnn", False) or getattr(args, "use_lstm", False))
-        self.bootstrap_value = bool(getattr(args, "value_bootstrap", False) or getattr(args, "bootstrap_value", False))
+        self.use_lstm = bool(getattr(args, "use_lstm", False))
+        self.bootstrap_value = bool(args.bootstrap_value)
 
         # Shared tensors from BufferMgr
         self.traj_tensors = ctx.buffer_mgr.traj_tensors
@@ -225,7 +225,7 @@ class RolloutWorker:
 
         # Write mask for LSTM
         if self.use_lstm and "mask" in self.traj_tensors:
-            mask_val = 0.0 if es.step == 0 and es.done else 1.0
+            mask_val = 0.0 if es.done else 1.0
             self.traj_tensors["mask"][es.traj_idx, es.step] = mask_val
 
         msg = struct.pack(REQ_FMT, es.traj_idx, es.step,

@@ -32,8 +32,7 @@ class Args:
     reward_mode: str = field(default="idle", metadata={"help": "Reward mode: idle, walk, or punch"})
     target_vx: float = field(default=1.5, metadata={"help": "Target forward velocity for walk mode"})
 
-    lag_control: bool = field(default=False, metadata={"help": "Lag control flag"})
-    policy_lag: int = field(default=1, metadata={"help": "Max policy lag"})
+    max_policy_lag: int = field(default=0, metadata={"help": "Discard trajectories with policy lag > this (0 = disabled)"})
 
     # --- Topology ---
     num_workers: int = field(default=8, metadata={"help": "Number of rollout worker processes"})
