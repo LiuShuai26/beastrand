@@ -7,6 +7,10 @@ transition pairs for discriminator training.
 Per-frame AMP state features (matching Brain.cpp observation layout):
     [pelvis_y, joint_sin_cos(24), body_pos_pelvis_frame(10), phase(1)] = 36 dims
 
+When the environment observation does not include a phase channel
+(e.g. VAEBrain, 35-dim AMP features), pass ``include_phase=False``
+to drop the phase column so the buffer matches the policy's feature space.
+
 - Joints are stored as sin/cos pairs (not raw angles) to match the raw
   observation format and avoid lossy atan2 roundtrips.
 - Body positions are rotated into the pelvis local frame using the same
@@ -42,8 +46,8 @@ class AMPMotionBuffer:
         device:         Torch device for pre-computed tensors.
 
     Attributes:
-        obs_dim:        Dimensionality of a single-frame AMP state (36).
-        transition_dim: Dimensionality of a transition pair (72).
+        obs_dim:        Dimensionality of a single-frame AMP state (35 or 36).
+        transition_dim: Dimensionality of a transition pair (obs_dim * 2).
     """
 
     def __init__(
@@ -52,6 +56,7 @@ class AMPMotionBuffer:
         joint_order,
         body_order,
         device="cpu",
+        include_phase=True,
     ):
         if isinstance(keyframe_files, str):
             keyframe_files = [keyframe_files]
@@ -61,8 +66,10 @@ class AMPMotionBuffer:
         self.body_order = list(body_order)
         self.num_joints = len(self.joint_order)
         self.num_bodies = len(self.body_order)
-        # 1 (pelvis_y) + num_joints*2 (sin/cos) + num_bodies*2 (x/y) + 1 (phase)
-        self.obs_dim = 1 + self.num_joints * 2 + self.num_bodies * 2 + 1
+        self.include_phase = include_phase
+        # 1 (pelvis_y) + num_joints*2 (sin/cos) + num_bodies*2 (x/y) [+ 1 (phase)]
+        base_dim = 1 + self.num_joints * 2 + self.num_bodies * 2
+        self.obs_dim = base_dim + 1 if include_phase else base_dim
         self.transition_dim = self.obs_dim * 2
 
         clips = []  # list of (F, obs_dim) arrays, one per file
@@ -79,15 +86,17 @@ class AMPMotionBuffer:
             clip = np.zeros((num_frames, self.obs_dim), dtype=np.float32)
             for i, kf in enumerate(keyframes):
                 base_feat = self._keyframe_to_amp(kf)
-                # Compute phase for this frame
-                if num_frames <= 1:
-                    phase = 0.0
-                elif is_cyclic:
-                    phase = i / num_frames
+                if include_phase:
+                    if num_frames <= 1:
+                        phase = 0.0
+                    elif is_cyclic:
+                        phase = i / num_frames
+                    else:
+                        phase = i / (num_frames - 1)
+                    clip[i, :-1] = base_feat
+                    clip[i, -1] = phase
                 else:
-                    phase = i / (num_frames - 1)
-                clip[i, :-1] = base_feat
-                clip[i, -1] = phase
+                    clip[i] = base_feat
             clips.append(clip)
 
         # Build transition pairs per clip, then concatenate
@@ -127,11 +136,11 @@ class AMPMotionBuffer:
         )
 
     def _keyframe_to_amp(self, kf):
-        """Convert one keyframe dict to a 35-dim AMP base state (without phase).
+        """Convert one keyframe dict to a base AMP state (without phase).
 
-        Matches the Brain.cpp observation format:
+        Returns a 35-dim array matching the Brain.cpp observation format:
           [pelvis_y, sin(j0), cos(j0), ..., body0_lx, body0_ly, ...]
-        Phase is appended by the caller.
+        Phase (if included) is appended by the caller.
         """
         feat = []
 

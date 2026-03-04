@@ -60,11 +60,16 @@ class PPOAMPAlgorithm:
         self.style_reward_weight = args.style_reward_weight
 
         # Motion buffer (loads keyframe data)
+        # Base AMP features = pelvis_y(1) + sin/cos joints(24) + body positions(10) = 35
+        # Phase adds 1 more → 36.  VAEBrain has no phase obs, so amp_obs_dim = 35.
+        base_amp_dim = 1 + len(JOINT_ORDER) * 2 + len(BODY_ORDER) * 2
+        include_phase = (self.amp_obs_dim == base_amp_dim + 1)
         self.motion_buffer = AMPMotionBuffer(
             keyframe_files=args.keyframe_file,
             joint_order=JOINT_ORDER,
             body_order=BODY_ORDER,
             device=device,
+            include_phase=include_phase,
         )
         assert self.motion_buffer.obs_dim == self.amp_obs_dim, (
             f"Motion buffer obs_dim ({self.motion_buffer.obs_dim}) != "
