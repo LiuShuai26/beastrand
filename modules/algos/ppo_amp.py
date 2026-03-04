@@ -170,7 +170,7 @@ class PPOAMPAlgorithm:
 
         for i, view in enumerate(views):
             done_np = view["done"]  # (T,)
-            terminated_np = view["terminated"]  # (T,)
+            truncated_np = view.get("truncated", None)  # (T,) or None
             valid_mask = (done_np == 0).astype(np.float32)
             style_rewards = style_rewards_np[i] * valid_mask
 
@@ -181,12 +181,19 @@ class PPOAMPAlgorithm:
             adv_per_group = np.zeros((T, G), dtype=np.float32)
             ret_per_group = np.zeros((T, G), dtype=np.float32)
 
+            # Use ``done`` (not ``terminated``) — auto-reset means obs[t+1]
+            # after any done belongs to a NEW episode; bootstrapping across
+            # that boundary would leak the next episode's value.
+            # SB3-style truncation correction: r_t += gamma * V(t,g).
             for g in range(G):
                 last_adv = 0.0
                 for t in range(T - 1, -1, -1):
-                    nonterminal = 1.0 - float(terminated_np[t])
+                    nonterminal = 1.0 - float(done_np[t])
+                    r_t = float(rewards_per_group[g][t])
+                    if truncated_np is not None and truncated_np[t]:
+                        r_t += gamma * float(value_g[t, g])
                     delta = (
-                        rewards_per_group[g][t]
+                        r_t
                         + gamma * nonterminal * value_g[t + 1, g]
                         - value_g[t, g]
                     )

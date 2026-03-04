@@ -85,17 +85,32 @@ def compute_gae(ctx, view) -> None:
     """
     Compute GAE advantages and returns, writing results into the view dict.
 
-    view: Dict[str, np.ndarray] with keys: reward, terminated, value, advantage, return
+    view: Dict[str, np.ndarray] with keys: reward, done, value, advantage, return
+
+    Uses ``done`` (not ``terminated``) for the nonterminal mask because
+    trajectories use auto-reset: after any done (terminated *or* truncated),
+    obs[t+1] belongs to a NEW episode.  Bootstrapping across that boundary
+    would leak the next episode's value into the current one.
+
+    For **truncated** episodes (time-limit, agent still alive), we apply
+    SB3-style reward correction: ``r_t += gamma * V(obs_t)`` so the agent
+    learns that truncation is not a catastrophic failure.  ``V(obs_t)`` is
+    an approximation of ``V(s_terminal)`` (the true terminal observation is
+    lost due to Beast's auto-reset inside Habitat::Step).
     """
     T = ctx.args.rollout
+    gamma = ctx.args.gamma
     arrays = view
+    has_truncated = "truncated" in arrays
     adv = np.zeros_like(arrays["advantage"], dtype=np.float32)
     last_adv = 0.0
     for t in range(T - 1, -1, -1):
-        nonterminal = 1.0 - float(arrays["terminated"][t])
-        delta = arrays["reward"][t] + ctx.args.gamma * nonterminal * float(arrays["value"][t + 1]) - float(
-            arrays["value"][t])
-        last_adv = delta + ctx.args.gamma * ctx.args.lam * nonterminal * last_adv
+        nonterminal = 1.0 - float(arrays["done"][t])
+        r_t = float(arrays["reward"][t])
+        if has_truncated and arrays["truncated"][t]:
+            r_t += gamma * float(arrays["value"][t])
+        delta = r_t + gamma * nonterminal * float(arrays["value"][t + 1]) - float(arrays["value"][t])
+        last_adv = delta + gamma * ctx.args.lam * nonterminal * last_adv
         adv[t] = last_adv
     arrays["advantage"] = adv
     arrays["return"] = adv + arrays["value"][:-1].astype(np.float32)
