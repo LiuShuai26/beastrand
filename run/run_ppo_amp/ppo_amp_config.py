@@ -12,13 +12,13 @@ import time
 
 @dataclass
 class Args:
-    # --- Module paths (PPO-AMP variants) ---
-    data_record_path: str = "modules.dataset.data_record.ppo_amp_data_record.PPOAMPDataRecord"
-    policy_path: str = "modules.policy.ppo_amp_policy.PPOAMPPolicy"
-    algorithm_path: str = "modules.algos.ppo_amp.PPOAMPAlgorithm"
-    make_env_path: str = "modules.envs.make_env_amp.make_env_amp"
+    # --- Module paths (PPO-AMP variants, not CLI-configurable) ---
+    data_record_path: str = field(default="modules.dataset.data_record.ppo_amp_data_record.PPOAMPDataRecord", init=False)
+    policy_path: str = field(default="modules.policy.ppo_amp_policy.PPOAMPPolicy", init=False)
+    algorithm_path: str = field(default="modules.algos.ppo_amp.PPOAMPAlgorithm", init=False)
+    make_env_path: str = field(default="modules.envs.make_env_amp.make_env_amp", init=False)
 
-    bootstrap_value: bool = True
+    bootstrap_value: bool = field(default=True, init=False)
 
     device: str = field(default="cpu", metadata={"help": "Device to run on (cpu/cuda)"})
 

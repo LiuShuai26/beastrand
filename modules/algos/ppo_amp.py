@@ -22,9 +22,11 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 
+from modules.algos.ppo import normalize_advantages
 from modules.amp.discriminator import AMPDiscriminator
 from modules.amp.motion_buffer import AMPMotionBuffer
 from modules.amp.rewards import compute_disc_loss, compute_style_reward
+from utils.checkpoint_utils import ActorForExport, ensure_single_onnx_file
 from utils.tensor_utils import to_torch
 
 G = 2  # reward groups: 0 = task, 1 = style
@@ -260,7 +262,7 @@ class PPOAMPAlgorithm:
                 # Policy loss (combined advantage)
                 mb_advantages = b_advantages[mb_inds]
                 if args.normalize_adv:
-                    mb_advantages = (mb_advantages - mb_advantages.mean()) / (mb_advantages.std() + 1e-8)
+                    mb_advantages = normalize_advantages(mb_advantages)
 
                 pg_loss1 = -mb_advantages * ratio
                 pg_loss2 = -mb_advantages * torch.clamp(
@@ -411,7 +413,7 @@ class PPOAMPAlgorithm:
 
         # 4. ONNX export (actor only: body → mean action, single file)
         try:
-            actor = _ActorForExport(policy.body, policy.dist_head.mean)
+            actor = ActorForExport(policy.body, policy.dist_head.mean)
             actor.eval()
             obs_dim = policy.obs_dim
             dummy = torch.zeros(1, obs_dim, device=self.device)
@@ -424,7 +426,7 @@ class PPOAMPAlgorithm:
                 output_names=["action_mean"],
                 dynamic_axes={"obs": {0: "batch"}, "action_mean": {0: "batch"}},
             )
-            _ensure_single_onnx_file(onnx_path)
+            ensure_single_onnx_file(onnx_path)
             logging.info("saved ONNX actor to %s", onnx_path)
         except Exception:
             logging.exception("ONNX export failed")
@@ -454,31 +456,5 @@ class PPOAMPAlgorithm:
             logging.info("loaded discriminator from %s", disc_path)
 
 
-class _ActorForExport(nn.Module):
-    """Minimal actor (body + mean head) for ONNX export."""
-
-    def __init__(self, body: nn.Module, mean_head: nn.Module):
-        super().__init__()
-        self.body = body
-        self.mean_head = mean_head
-
-    def forward(self, obs: torch.Tensor) -> torch.Tensor:
-        return self.mean_head(self.body(obs))
-
-
-# ------------------------------------------------------------------
-# Helpers
-# ------------------------------------------------------------------
-
-def _ensure_single_onnx_file(onnx_path: str) -> None:
-    """Merge external data back into the .onnx protobuf if the exporter split it."""
-    import os as _os
-    data_path = onnx_path + ".data"
-    if not _os.path.exists(data_path):
-        return
-    import onnx
-    model = onnx.load(onnx_path, load_external_data=True)
-    onnx.save(model, onnx_path)
-    _os.remove(data_path)
 
 

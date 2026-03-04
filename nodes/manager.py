@@ -75,14 +75,10 @@ def probe_env(env_id: str, seed: int = 0,
                     "act": {"kind": "discrete", "shape": [1], "dtype": "int64",
                             "n": int(act_space.n), "low": None, "high": None}}
         elif isinstance(act_space, gym.spaces.Box):
-            result = {"obs": {"shape": list(obs_shape), "dtype": obs_dtype},
-                      "act": {"kind": "box", "shape": list(int(x) for x in act_space.shape),
-                              "dtype": "float32", "n": None,
-                              "low": act_space.low, "high": act_space.high}}
-            # Beast .so may expose AMP observation slices (single source of truth)
-            if hasattr(env, "so_amp_obs_slices"):
-                result["amp_obs_slices"] = env.so_amp_obs_slices
-            return result
+            return {"obs": {"shape": list(obs_shape), "dtype": obs_dtype},
+                    "act": {"kind": "box", "shape": list(int(x) for x in act_space.shape),
+                            "dtype": "float32", "n": None,
+                            "low": act_space.low, "high": act_space.high}}
         else:
             raise NotImplementedError(f"Unsupported act space: {type(act_space)}")
     finally:
@@ -180,18 +176,6 @@ class Manager:
         self.ctx.act_n = act_spec["n"]
         self.ctx.act_low = act_spec["low"]
         self.ctx.act_high = act_spec["high"]
-
-        # Auto-detect AMP obs slices from Beast .so if available
-        if "amp_obs_slices" in specs and hasattr(self.args, "amp_obs_slices"):
-            so_slices = specs["amp_obs_slices"]
-            cfg_slices = [tuple(s) for s in self.args.amp_obs_slices]
-            if so_slices != cfg_slices:
-                logging.warning(
-                    "amp_obs_slices auto-updated from .so metadata: %s (was %s)",
-                    so_slices, cfg_slices,
-                )
-                self.args.amp_obs_slices = so_slices
-                self.args.amp_obs_dim = sum(e - s for s, e in so_slices)
 
         # 2. Compute topology
         num_workers = self.args.num_workers
