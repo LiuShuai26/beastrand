@@ -80,7 +80,10 @@ class RolloutWorker:
         # --- ZMQ (only for sending requests + filled trajectories) ---
         self.bus = StrandBus()
         base = ctx.ipc_dir
-        self.bus.open("infer_req", mode="push", endpoint=f"{base}/infer.req", bind=False)
+        num_infer = getattr(args, "num_inference_servers", 1)
+        self.bus.open("infer_req", mode="push", endpoint=f"{base}/infer_0.req", bind=False)
+        for i in range(1, num_infer):
+            self.bus.sockets["infer_req"].connect(f"{base}/infer_{i}.req")
         self.bus.open("filled_out", mode="push", endpoint=f"{base}/data.filled.in", bind=False)
 
         # --- Profiling (only worker 0) ---

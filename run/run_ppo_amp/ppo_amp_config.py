@@ -20,7 +20,9 @@ class Args:
 
     bootstrap_value: bool = field(default=True, init=False)
 
-    device: str = field(default="cpu", metadata={"help": "Device to run on (cpu/cuda)"})
+    inference_device: str = field(default="cpu", metadata={"help": "InferenceServer device (cpu/cuda/mps)"})
+    learner_device: str = field(default="cpu", metadata={"help": "Learner device (cpu/cuda/mps)"})
+    num_inference_servers: int = field(default=1, metadata={"help": "Number of InferenceServer processes"})
 
     # --- Environment ---
     env_id: str = field(default="Humanoid-v5", metadata={"help": "Gym env id"})

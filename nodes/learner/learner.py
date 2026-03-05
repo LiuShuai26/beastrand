@@ -36,7 +36,7 @@ def main(ctx, logger_queue) -> None:
     buffer_mgr = ctx.buffer_mgr
 
     # --- Device ---
-    device = torch.device(args.device)
+    device = torch.device(args.learner_device)
 
     # --- Policy + Optimizer + Algorithm ---
     policy_cls = get_object_from_path(args.policy_path)

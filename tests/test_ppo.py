@@ -338,7 +338,8 @@ class TestPPOUpdate:
         N = 32
         rng = np.random.default_rng(123)
         torch.manual_seed(123)
-        ctx = _Ctx(rollout=N, minibatch_size=16, train_epochs=2, normalize_adv=False)
+        ctx = _Ctx(rollout=N, minibatch_size=16, train_epochs=2,
+                   normalize_adv=False, ppo_clip_value=100.0)
 
         obs = rng.standard_normal((N, 4)).astype(np.float32)
         with torch.no_grad():

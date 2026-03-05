@@ -35,9 +35,10 @@ OP_VALUE = 1
 
 
 class InferenceServer:
-    def __init__(self, ctx):
+    def __init__(self, ctx, server_idx: int = 0):
         self.ctx = ctx
-        self.device = torch.device(getattr(ctx.args, "device", "cpu"))
+        self.server_idx = server_idx
+        self.device = torch.device(getattr(ctx.args, "inference_device", "cpu"))
 
         # -- policy --
         policy_cls = get_object_from_path(ctx.args.policy_path)
@@ -53,7 +54,7 @@ class InferenceServer:
         # -- ZMQ (only for receiving requests, no reply sockets) --
         self.bus = StrandBus()
         base = ctx.ipc_dir
-        self.bus.open("req", mode="pull", endpoint=f"{base}/infer.req", bind=True)
+        self.bus.open("req", mode="pull", endpoint=f"{base}/infer_{server_idx}.req", bind=True)
 
         # -- Profiling --
         self.prof = ProfileAccum(interval=5.0)
@@ -70,7 +71,7 @@ class InferenceServer:
 
         # Initial weight load
         self.param_client.ensure_updated(self.policy)
-        logging.info("[inference] ready (device=%s, lstm=%s)", self.device, self.use_lstm)
+        logging.info("[inference:%d] ready (device=%s, lstm=%s)", self.server_idx, self.device, self.use_lstm)
 
         try:
             while not self.ctx.stop_event.is_set():
@@ -269,10 +270,10 @@ class InferenceServer:
         self._set_ready_flags(worker_ids, env_idxs)
 
 
-def main(ctx, logger_queue) -> None:
+def main(ctx, logger_queue, server_idx: int = 0) -> None:
     child_sig_setup()
     child_logging_setup()
     child_attach_logger(logger_queue)
-    logging.info("[inference] starting")
-    InferenceServer(ctx).serve()
-    logging.info("[inference] stopped")
+    logging.info("[inference:%d] starting", server_idx)
+    InferenceServer(ctx, server_idx=server_idx).serve()
+    logging.info("[inference:%d] stopped", server_idx)

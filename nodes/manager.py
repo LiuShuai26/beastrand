@@ -196,11 +196,10 @@ class Manager:
         self.ctx.buffer_mgr = buffer_mgr
         logging.info("BufferMgr: %d trajectories, T=%d", num_traj, T)
 
-        # 4. Create ParameterServer (shared weights)
-        device = torch.device(getattr(self.args, "device", "cpu"))
+        # 4. Create ParameterServer (shared weights, always CPU)
         policy_cls = get_object_from_path(self.args.policy_path)
-        init_policy = policy_cls(self.ctx).to(device)
-        param_server = ParameterServer(init_policy, device, buffer_mgr.policy_version)
+        init_policy = policy_cls(self.ctx)  # CPU — just need state_dict shape
+        param_server = ParameterServer(init_policy, torch.device("cpu"), buffer_mgr.policy_version)
         self.ctx.param_server = param_server
         del init_policy
         logging.info("ParameterServer: shared weights created")
@@ -214,8 +213,11 @@ class Manager:
         self._spawn("learner", learner_main, logger_queue=log_q)
         time.sleep(0.5)
 
-        self._spawn("inference_server", inference_server_main, logger_queue=log_q)
-        time.sleep(1.0)  # let inference server connect to req socket
+        num_infer = getattr(self.args, "num_inference_servers", 1)
+        for i in range(num_infer):
+            self._spawn(f"inference_server_{i}", inference_server_main,
+                        logger_queue=log_q, server_idx=i)
+        time.sleep(1.0)  # let inference servers bind
 
         for i in range(num_workers):
             self._spawn(f"worker_{i}", worker_main, worker_idx=i, logger_queue=log_q)
