@@ -85,13 +85,18 @@ class ParameterClient:
 def _build_shared_state_dict(
     module: torch.nn.Module, device: torch.device
 ) -> "OrderedDict[str, torch.Tensor]":
+    """Build a CPU shared-memory copy of the module's state dict.
+
+    Always stored on CPU with share_memory_() so it works across spawned
+    processes regardless of the training device. The copy/load helpers
+    handle CPU↔GPU transfers automatically.
+    """
     state = module.state_dict()
     shared: OrderedDict[str, torch.Tensor] = OrderedDict()
     for name, tensor in state.items():
-        t = tensor.detach().clone().to(device)
+        t = tensor.detach().clone().cpu()
         t.requires_grad_(False)
-        if device.type == "cpu":
-            t.share_memory_()
+        t.share_memory_()
         shared[name] = t
     return shared
 

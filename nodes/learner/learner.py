@@ -36,13 +36,7 @@ def main(ctx, logger_queue) -> None:
     buffer_mgr = ctx.buffer_mgr
 
     # --- Device ---
-    if args.device == "cpu":
-        device = torch.device("cpu")
-    else:
-        try:
-            device = torch.device("cuda", getattr(args, "gpu_id", 0))
-        except Exception:
-            device = torch.device("cpu")
+    device = torch.device(args.device)
 
     # --- Policy + Optimizer + Algorithm ---
     policy_cls = get_object_from_path(args.policy_path)
