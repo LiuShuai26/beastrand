@@ -1,13 +1,11 @@
 """
 RolloutWorker (v3): async per-env rollout via shared memory flags.
 
-Each worker manages ``num_envs_per_worker`` environments. When
-``worker_num_splits >= 2``, envs are divided into splits. Each split is
-processed in two phases: (1) step all ready envs, (2) burst-send all
-inference requests together. This creates temporal batching — the
-inference server receives requests in larger bursts for more efficient
-GPU utilization.  With ``worker_num_splits=0`` (default), each env sends
-its inference request immediately after stepping (original per-env behavior).
+Each worker manages ``num_envs_per_worker`` environments. Every env
+independently cycles through: send inference request → poll ready_flag →
+step → send next request. This per-env async design naturally pipelines
+CPU env.step() with GPU inference — no explicit double-buffering needed
+(see docs/design/remove-worker-splits.md for rationale).
 
 The InferenceServer sets ``ready_flags[worker_idx, env_idx] = 1`` after
 writing action/logp/value into shared tensors, and the worker polls these
@@ -20,7 +18,7 @@ import struct
 import time
 from dataclasses import dataclass
 from queue import Empty
-from typing import Dict, List, Optional
+from typing import Dict, List
 
 import numpy as np
 import torch
@@ -108,36 +106,21 @@ class RolloutWorker:
                 env=env, obs=obs, traj_idx=traj_idx, env_idx=ei,
             ))
 
-        # --- Organize envs into splits for pipelined inference ---
-        # 0 = per-env send (original behavior, best for light envs)
-        # 2+ = group envs into N splits, burst-send per split
-        self.num_splits = getattr(args, "worker_num_splits", 0)
-        if self.num_splits >= 2:
-            eps = self.num_envs // self.num_splits
-            self.splits: Optional[List[List[EnvState]]] = [
-                self.envs[i * eps:(i + 1) * eps]
-                for i in range(self.num_splits)]
-        else:
-            self.splits = None
 
     # ------------------------------------------------------------------
     # Core loop
     # ------------------------------------------------------------------
 
     def run(self):
-        logging.info("[worker:%d] ready (%d envs, splits=%s, T=%d)",
-                     self.worker_idx, self.num_envs,
-                     self.num_splits if self.splits else "off", self.T)
+        logging.info("[worker:%d] ready (%d envs, T=%d)",
+                     self.worker_idx, self.num_envs, self.T)
 
         # Initial: send inference requests for all envs
         for es in self.envs:
             self._send_request(es, OP_ACT)
 
         try:
-            if self.splits:
-                self._loop_split()
-            else:
-                self._loop_per_env()
+            self._loop_per_env()
         finally:
             self.bus.close_all()
             logging.info("[worker:%d] exiting", self.worker_idx)
@@ -165,49 +148,6 @@ class RolloutWorker:
                 if es.step < self.T:
                     self._send_request(es, OP_ACT)
                 stepped_any = True
-
-            if self.prof:
-                t_end = time.monotonic()
-                if not stepped_any:
-                    self.prof.add("idle_spin", t_end - t0)
-                report = self.prof.maybe_report(f"worker:{self.worker_idx}")
-                if report:
-                    logging.info(report)
-
-    def _loop_split(self):
-        """Split loop: step all envs in a split, then burst-send."""
-        while not self.ctx.stop_event.is_set():
-            t0 = time.monotonic()
-            stepped_any = False
-
-            for split in self.splits:
-                # Phase 1: step all ready envs in this split
-                stepped: List[EnvState] = []
-                for es in split:
-                    if not es.pending:
-                        continue
-                    if not self.ready_flags[self.worker_idx, es.env_idx]:
-                        continue
-
-                    self.ready_flags[self.worker_idx, es.env_idx] = 0
-                    t1 = time.monotonic()
-                    self._advance_single(es)
-                    t2 = time.monotonic()
-
-                    if self.prof:
-                        self.prof.add("advance", t2 - t1)
-
-                    if es.step < self.T:
-                        stepped.append(es)
-
-                # Phase 2: burst-send all inference requests for this split
-                if stepped:
-                    t_send = time.monotonic()
-                    for es in stepped:
-                        self._send_request(es, OP_ACT)
-                    stepped_any = True
-                    if self.prof:
-                        self.prof.add("send_req", time.monotonic() - t_send)
 
             if self.prof:
                 t_end = time.monotonic()
@@ -366,6 +306,10 @@ class RolloutWorker:
 # ------------------------------------------------------------------
 
 def main(ctx, worker_idx: int, logger_queue) -> None:
+    # NOTE: No CPU core pinning (os.sched_setaffinity / psutil.cpu_affinity).
+    # The OS scheduler handles core assignment well enough for our env.step()
+    # latency (~0.1-1ms). Consider adding affinity if scaling to 96+ vCPU
+    # or running on NUMA machines where cross-node memory access hurts.
     child_sig_setup()
     child_logging_setup()
     child_attach_logger(logger_queue)

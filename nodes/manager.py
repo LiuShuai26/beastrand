@@ -207,8 +207,11 @@ class Manager:
         # 5. Spawn nodes
         log_q = get_logger_queue()
 
+        # Spawn order matters: downstream nodes (that bind ZMQ sockets) must
+        # start before upstream nodes (that connect). Sleeps give ZMQ time to
+        # bind; a production system would use a handshake protocol instead.
         self._spawn("data_server", data_server_main, logger_queue=log_q)
-        time.sleep(0.5)  # let ZMQ sockets bind
+        time.sleep(0.5)
 
         self._spawn("learner", learner_main, logger_queue=log_q)
         time.sleep(0.5)
@@ -217,7 +220,7 @@ class Manager:
         for i in range(num_infer):
             self._spawn(f"inference_server_{i}", inference_server_main,
                         logger_queue=log_q, server_idx=i)
-        time.sleep(1.0)  # let inference servers bind
+        time.sleep(1.0)
 
         for i in range(num_workers):
             self._spawn(f"worker_{i}", worker_main, worker_idx=i, logger_queue=log_q)

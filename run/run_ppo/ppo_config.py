@@ -27,7 +27,6 @@ class Args:
     # Topology
     num_workers: int = field(default=8, metadata={"help": "Number of rollout worker processes"})
     num_envs_per_worker: int = field(default=2, metadata={"help": "Environments per worker"})
-    worker_num_splits: int = field(default=0, metadata={"help": "Split envs into N groups for pipelined inference (0 = per-env send, 2+ = double buffer)"})
     rollout: int = field(default=64, metadata={"help": "Unroll horizon (steps per trajectory)"})
 
     # policy
@@ -81,9 +80,6 @@ class Args:
         assert self.rollout > 0
         assert self.total_env_steps > 0
         assert self.num_envs_per_worker > 0
-        if self.worker_num_splits >= 2:
-            assert self.num_envs_per_worker % self.worker_num_splits == 0, \
-                f"num_envs_per_worker ({self.num_envs_per_worker}) must be divisible by worker_num_splits ({self.worker_num_splits})"
 
     def __post_init__(self):
         if getattr(self, "use_lstm", False):
