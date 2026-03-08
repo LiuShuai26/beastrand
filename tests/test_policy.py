@@ -10,6 +10,8 @@ class DummyCfg:
     def __init__(self, use_lstm: bool = False):
         self.obs_shape = (4,)
         self.act_shape = (2,)
+        self.act_kind = "box"
+        self.act_n = None
         args = type("Args", (), {})()
         args.mlp_layers = [8, 8]
         args.use_lstm = use_lstm

@@ -299,6 +299,8 @@ class TestPPOUpdate:
         class Cfg:
             obs_shape = (4,)
             act_shape = (2,)
+            act_kind = "box"
+            act_n = None
 
             class args:
                 mlp_layers = [8, 8]

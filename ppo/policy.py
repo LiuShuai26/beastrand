@@ -9,7 +9,7 @@ import torch.nn as nn
 import torch.optim as optim
 
 from core.model.basic_model import MLP, init_weights
-from core.model.distributions import DiagGaussianDistribution
+from core.model.distributions import DiagGaussianDistribution, CategoricalDistribution
 from core.base_policy import BasePolicy
 
 
@@ -23,7 +23,11 @@ class PPOPolicy(BasePolicy):
         self.body = MLP(self.obs_dim, cfg.args.mlp_layers, activation=activation)
         latent_dim = int(self.body.out_dim)
 
-        self.dist_head = DiagGaussianDistribution(latent_dim, self.act_dim)
+        self._discrete = cfg.act_kind == "discrete"
+        if self._discrete:
+            self.dist_head = CategoricalDistribution(latent_dim, cfg.act_n)
+        else:
+            self.dist_head = DiagGaussianDistribution(latent_dim, self.act_dim)
         self.value_head = nn.Linear(latent_dim, 1)
 
         self.use_lstm = False
@@ -47,6 +51,8 @@ class PPOPolicy(BasePolicy):
         dist = self.dist_head(latent)
         action = dist.get_actions(deterministic=deterministic)
         logp = dist.log_prob(action)
+        if self._discrete:
+            action = action.unsqueeze(-1).float()  # [B] -> [B, 1] for shared tensor
         value = self.value_head(latent).squeeze(-1)
 
         return {"action": action, "logp": logp, "value": value}

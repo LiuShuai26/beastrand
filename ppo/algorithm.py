@@ -54,9 +54,17 @@ class PPOAlgorithm:
         torch.save(policy.state_dict(), policy_path)
         logging.info("saved policy to %s", policy_path)
 
-        # 2. ONNX export (actor only: body → mean action, single file)
+        # 2. ONNX export (actor only: body → deterministic action, single file)
         try:
-            actor = ActorForExport(policy.body, policy.dist_head.mean)
+            if hasattr(policy.dist_head, "mean"):
+                # Continuous: body → mean linear layer
+                action_head = policy.dist_head.mean
+            elif hasattr(policy.dist_head, "logits"):
+                # Discrete: body → logits linear layer
+                action_head = policy.dist_head.logits
+            else:
+                raise AttributeError("Unknown dist_head type for ONNX export")
+            actor = ActorForExport(policy.body, action_head)
             actor.eval()
             obs_dim = policy.obs_dim
             dummy = torch.zeros(1, obs_dim, device=self.device)
