@@ -64,6 +64,11 @@ class PPOAlgorithm:
 
     def update(self, batch):
         self._step_lr()
+        # Normalize returns on the full batch (not per-trajectory)
+        if self.returns_rms is not None:
+            raw_returns = batch["ret"]
+            self.returns_rms.update(raw_returns)
+            batch["ret"] = self.returns_rms.normalize(raw_returns)
         stats = ppo_update(self.ctx, self.policy, self.opt, batch, self.device)
         stats["learning_rate"] = self.opt["opt"].param_groups[0]["lr"]
         return stats
@@ -130,7 +135,8 @@ def compute_gae(ctx, view, returns_rms=None) -> None:
     lost due to auto-reset).
 
     If ``returns_rms`` is provided (SF-style normalize_returns), values are
-    denormalized before GAE and returns are normalized after.
+    denormalized before GAE.  Returns normalization happens later on the
+    full batch in ``PPOAlgorithm.update()``.
     """
     T = ctx.args.rollout
     gamma = ctx.args.gamma
@@ -155,11 +161,6 @@ def compute_gae(ctx, view, returns_rms=None) -> None:
 
     arrays["advantage"] = adv
     returns = adv + values[:-1]
-
-    # Normalize returns for critic targets (SF-style)
-    if returns_rms is not None:
-        returns_rms.update(returns)
-        returns = returns_rms.normalize(returns)
 
     arrays["return"] = returns
 
@@ -214,7 +215,7 @@ def ppo_update(
             eval_out = policy.evaluate_actions(inputs)
             newlogprob, entropy, newvalue = eval_out["logp"], eval_out["entropy"], eval_out["value"]
             logratio = newlogprob - b_logprobs[mb_inds]
-            ratio = logratio.exp()
+            ratio = torch.clamp(logratio.exp(), 0.05, 20.0)
 
             # Differentiable KL for optional penalty term
             approx_kl = ((ratio - 1) - logratio).mean()

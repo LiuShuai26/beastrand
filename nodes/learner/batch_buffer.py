@@ -49,4 +49,6 @@ class BatchBuffer:
                 f"BatchBuffer not full yet: valid={self.valid_steps}, capacity={self.buffer_size}"
             )
 
-        return {f: arr.copy() for f, arr in self.arrays.items()}
+        result = {f: arr.copy() for f, arr in self.arrays.items()}
+        self.valid_steps = 0  # require fresh data before next training batch
+        return result
