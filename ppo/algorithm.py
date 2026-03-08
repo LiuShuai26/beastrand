@@ -38,12 +38,35 @@ class PPOAlgorithm:
         self.opt = opt
         self.device = device
 
+        self.returns_rms = None
+        if getattr(ctx.args, "normalize_returns", False):
+            from core.running_mean_std import RunningMeanStd
+            self.returns_rms = RunningMeanStd()
+
+        # LR schedule
+        self._initial_lr = ctx.args.learning_rate
+        self._lr_schedule = getattr(ctx.args, "lr_schedule", "constant")
+        self._lr_update_count = 0
+        self._lr_total_updates = max(1, ctx.args.total_env_steps // ctx.args.batch_size)
+
+    def _step_lr(self):
+        """Apply learning rate schedule before each update."""
+        if self._lr_schedule == "linear_decay":
+            frac = 1.0 - self._lr_update_count / self._lr_total_updates
+            new_lr = self._initial_lr * max(0.0, frac)
+            for pg in self.opt["opt"].param_groups:
+                pg["lr"] = new_lr
+        self._lr_update_count += 1
+
     def prepare_batch(self, slot_view):
         # PPO-specific prep: bootstrap + GAE
-        return compute_gae(self.ctx, slot_view)
+        return compute_gae(self.ctx, slot_view, returns_rms=self.returns_rms)
 
     def update(self, batch):
-        return ppo_update(self.ctx, self.policy, self.opt, batch, self.device)
+        self._step_lr()
+        stats = ppo_update(self.ctx, self.policy, self.opt, batch, self.device)
+        stats["learning_rate"] = self.opt["opt"].param_groups[0]["lr"]
+        return stats
 
     def save_checkpoint(self, save_dir: str, policy: nn.Module) -> None:
         """Save policy weights and ONNX actor."""
@@ -89,7 +112,7 @@ def normalize_advantages(adv: torch.Tensor) -> torch.Tensor:
     return (adv - adv.mean()) / (adv.std(unbiased=False) + 1e-8)
 
 
-def compute_gae(ctx, view) -> None:
+def compute_gae(ctx, view, returns_rms=None) -> None:
     """
     Compute GAE advantages and returns, writing results into the view dict.
 
@@ -104,24 +127,41 @@ def compute_gae(ctx, view) -> None:
     SB3-style reward correction: ``r_t += gamma * V(obs_t)`` so the agent
     learns that truncation is not a catastrophic failure.  ``V(obs_t)`` is
     an approximation of ``V(s_terminal)`` (the true terminal observation is
-    lost due to Beast's auto-reset inside Habitat::Step).
+    lost due to auto-reset).
+
+    If ``returns_rms`` is provided (SF-style normalize_returns), values are
+    denormalized before GAE and returns are normalized after.
     """
     T = ctx.args.rollout
     gamma = ctx.args.gamma
     arrays = view
     has_truncated = "truncated" in arrays
+
+    # Values from the critic — denormalize if normalize_returns is active
+    values = arrays["value"][:T + 1].astype(np.float32)
+    if returns_rms is not None:
+        values = returns_rms.denormalize(values)
+
     adv = np.zeros_like(arrays["advantage"], dtype=np.float32)
     last_adv = 0.0
     for t in range(T - 1, -1, -1):
         nonterminal = 1.0 - float(arrays["done"][t])
         r_t = float(arrays["reward"][t])
         if has_truncated and arrays["truncated"][t]:
-            r_t += gamma * float(arrays["value"][t])
-        delta = r_t + gamma * nonterminal * float(arrays["value"][t + 1]) - float(arrays["value"][t])
+            r_t += gamma * float(values[t])
+        delta = r_t + gamma * nonterminal * float(values[t + 1]) - float(values[t])
         last_adv = delta + gamma * ctx.args.lam * nonterminal * last_adv
         adv[t] = last_adv
+
     arrays["advantage"] = adv
-    arrays["return"] = adv + arrays["value"][:-1].astype(np.float32)
+    returns = adv + values[:-1]
+
+    # Normalize returns for critic targets (SF-style)
+    if returns_rms is not None:
+        returns_rms.update(returns)
+        returns = returns_rms.normalize(returns)
+
+    arrays["return"] = returns
 
 
 def ppo_update(
@@ -176,18 +216,20 @@ def ppo_update(
             logratio = newlogprob - b_logprobs[mb_inds]
             ratio = logratio.exp()
 
+            # Differentiable KL for optional penalty term
+            approx_kl = ((ratio - 1) - logratio).mean()
             with torch.no_grad():
-                approx_kl = ((ratio - 1) - logratio).mean()
                 clipfracs.append(((ratio - 1.0).abs() > ctx.args.ppo_clip_range).float().mean().item())
 
             mb_advantages = b_advantages[mb_inds]
             if ctx.args.normalize_adv:
                 mb_advantages = normalize_advantages(mb_advantages)
 
+            # Unbiased PPO clipping (SF-style): clip(r, 1/(1+e), 1+e)
+            clip_high = 1.0 + ctx.args.ppo_clip_range
+            clip_low = 1.0 / clip_high
             pg_loss1 = -mb_advantages * ratio
-            pg_loss2 = -mb_advantages * torch.clamp(
-                ratio, 1 - ctx.args.ppo_clip_range, 1 + ctx.args.ppo_clip_range
-            )
+            pg_loss2 = -mb_advantages * torch.clamp(ratio, clip_low, clip_high)
             pg_loss = torch.max(pg_loss1, pg_loss2).mean()
 
             newvalue = newvalue.view(-1)
@@ -198,11 +240,14 @@ def ppo_update(
                 ctx.args.ppo_clip_value,
             )
             v_loss_clipped = (v_clipped - b_returns[mb_inds]) ** 2
-            v_loss_max = torch.max(v_loss_unclipped, v_loss_clipped)
-            v_loss = 0.5 * v_loss_max.mean()
+            v_loss = torch.max(v_loss_unclipped, v_loss_clipped).mean()
 
             entropy_loss = entropy.mean()
             loss = pg_loss - ctx.args.entropy_coef * entropy_loss + v_loss * ctx.args.value_coef
+
+            kl_coeff = getattr(ctx.args, "kl_loss_coeff", 0.0)
+            if kl_coeff > 0.0:
+                loss = loss + kl_coeff * approx_kl
 
             optimizer.zero_grad()
             loss.backward()

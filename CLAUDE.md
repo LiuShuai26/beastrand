@@ -73,12 +73,9 @@ Inference responses use shared memory flags (`ready_flags[worker_idx, env_idx]`)
 
 ### Environment backends
 
-Two environment backends are supported:
+**Gymnasium (default)** — any env registered in the Gymnasium registry (e.g. `Humanoid-v5`, `CartPole-v1`), loaded via `gym.make()`.
 
-1. **Gymnasium (default)** — any env registered in the Gymnasium registry (e.g. `Humanoid-v5`, `CartPole-v1`), loaded via `gym.make()`.
-2. **Beast .so** — custom compiled C++ environments (e.g. `HumanoidEnv.cpython-310-darwin.so`), loaded directly via `importlib.import_module` and wrapped with a built-in `BeastGymWrapper` (no external dependencies). The factory in `projects/ppo_amp/make_env.py` tries Beast first; if the `.so` is not found, it falls back to `gym.make()`.
-
-The environment factory is pluggable via `make_env_path` in the config (dotted Python path). `probe_env()` in Manager also respects this path so that env specs are correctly probed for custom backends.
+The environment factory is pluggable via `make_env_path` in the config (dotted Python path). Projects can provide custom factories for non-Gymnasium environments. `probe_env()` in Manager also respects this path so that env specs are correctly probed for custom backends.
 
 ### Module system (pluggable via dotted paths)
 

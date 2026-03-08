@@ -276,10 +276,11 @@ class PPOAMPAlgorithm:
                 if args.normalize_adv:
                     mb_advantages = normalize_advantages(mb_advantages)
 
+                # Unbiased PPO clipping (SF-style): clip(r, 1/(1+e), 1+e)
+                clip_high = 1.0 + args.ppo_clip_range
+                clip_low = 1.0 / clip_high
                 pg_loss1 = -mb_advantages * ratio
-                pg_loss2 = -mb_advantages * torch.clamp(
-                    ratio, 1 - args.ppo_clip_range, 1 + args.ppo_clip_range
-                )
+                pg_loss2 = -mb_advantages * torch.clamp(ratio, clip_low, clip_high)
                 pg_loss = torch.max(pg_loss1, pg_loss2).mean()
 
                 # Per-group value loss
@@ -293,7 +294,7 @@ class PPOAMPAlgorithm:
                         args.ppo_clip_value,
                     )
                     v_loss_clipped = (v_clipped - b_returns_g[mb_inds, g]) ** 2
-                    v_loss = v_loss + 0.5 * torch.max(v_loss_unclipped, v_loss_clipped).mean()
+                    v_loss = v_loss + torch.max(v_loss_unclipped, v_loss_clipped).mean()
 
                 entropy_loss = entropy.mean()
                 loss = pg_loss - args.entropy_coef * entropy_loss + v_loss * args.value_coef

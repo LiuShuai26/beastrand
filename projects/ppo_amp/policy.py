@@ -95,6 +95,6 @@ class PPOAMPPolicy(BasePolicy):
 
         return {"logp": logp, "entropy": entropy, "value": value}
 
-    def build_optimizers(self, ctx, eps: float = 1e-5) -> dict:
+    def build_optimizers(self, ctx, eps: float = 1e-6) -> dict:
         opt = optim.Adam(self.parameters(), lr=ctx.args.learning_rate, eps=eps)
         return {"opt": opt}

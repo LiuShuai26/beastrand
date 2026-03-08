@@ -16,6 +16,7 @@ from __future__ import annotations
 import logging
 import struct
 import time
+from collections import deque
 from dataclasses import dataclass
 from queue import Empty
 from typing import Dict, List
@@ -84,8 +85,11 @@ class RolloutWorker:
             self.bus.sockets["infer_req"].connect(f"{base}/infer_{i}.req")
         self.bus.open("filled_out", mode="push", endpoint=f"{base}/data.filled.in", bind=False)
 
-        # --- Profiling (only worker 0) ---
+        # --- Profiling & stats (only worker 0) ---
         self.prof = ProfileAccum(interval=5.0) if worker_idx == 0 else None
+        self._recent_rewards: deque = deque(maxlen=100) if worker_idx == 0 else None
+        self._recent_lengths: deque = deque(maxlen=100) if worker_idx == 0 else None
+        self._last_summary_time: float = 0.0
 
         # --- Resolve env factory (configurable via args.make_env_path) ---
         _make_env_path = getattr(args, "make_env_path", None)
@@ -212,10 +216,19 @@ class RolloutWorker:
         es.done = done
 
         if done:
-            if self.worker_idx == 0 and info and "episode" in info:
+            if self.worker_idx == 0:
                 step = int(self.ctx.global_step.value)
-                log_scalar(run="actor", tag="episode_reward", value=info["episode"]["r"], step=step)
-                log_scalar(run="actor", tag="episode_length", value=info["episode"]["l"], step=step)
+                # Use raw reward from RecordEpisodeStatistics when available
+                # (before NormalizeReward); fall back to accumulated reward
+                # (already raw for envs without normalization wrappers)
+                raw_reward = es.episode_reward
+                if info and "episode" in info:
+                    raw_reward = float(info["episode"]["r"])
+                self._recent_rewards.append(raw_reward)
+                self._recent_lengths.append(es.episode_length)
+                log_scalar(run="actor", tag="episode_reward", value=raw_reward, step=step)
+                log_scalar(run="actor", tag="episode_length", value=es.episode_length, step=step)
+                self._maybe_log_summary(step)
 
             next_obs, _ = es.env.reset()
             es.episode_reward = 0.0
@@ -235,6 +248,21 @@ class RolloutWorker:
         # Trajectory complete -> finalize, publish, get new buffer
         if es.step >= self.T:
             self._finalize_trajectory(es)
+
+    def _maybe_log_summary(self, step: int) -> None:
+        """Print aggregated episode stats periodically (worker 0 only)."""
+        now = time.time()
+        if now - self._last_summary_time < 5.0:
+            return
+        if not self._recent_rewards:
+            return
+        n = len(self._recent_rewards)
+        avg_r = sum(self._recent_rewards) / n
+        avg_l = sum(self._recent_lengths) / n
+        logging.info("avg_reward=%.2f avg_length=%.0f episodes=%d steps=%d",
+                     avg_r, avg_l, n, step)
+        log_scalar(run="actor", tag="avg_reward", value=avg_r, step=step)
+        self._last_summary_time = now
 
     # ------------------------------------------------------------------
     # Trajectory finalization

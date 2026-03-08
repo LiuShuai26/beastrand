@@ -50,6 +50,10 @@ class Args:
     ppo_clip_value: float = field(default=1.0, metadata={"help": "PPO value clip range"})
 
     normalize_adv : bool = field(default=True, metadata={"help": "Normalize advantages"})
+    normalize_returns: bool = field(default=True, metadata={"help": "Normalize value targets with running mean/std (SF-style)"})
+    normalize_input: bool = field(default=True, metadata={"help": "Normalize observations with running mean/std (policy-level)"})
+    kl_loss_coeff: float = field(default=0.0, metadata={"help": "KL divergence penalty coefficient (0=disabled)"})
+    lr_schedule: str = field(default="constant", metadata={"help": "LR schedule: constant | linear_decay"})
 
     # Logging / checkpoints
     logdir: str = field(default="train_logs", metadata={"help": "Root log directory"})

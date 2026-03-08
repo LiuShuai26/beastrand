@@ -21,11 +21,34 @@ class PPOLSTMAlgorithm:
         self.opt = opt
         self.device = device
 
+        self.returns_rms = None
+        if getattr(ctx.args, "normalize_returns", False):
+            from core.running_mean_std import RunningMeanStd
+            self.returns_rms = RunningMeanStd()
+
+        # LR schedule
+        self._initial_lr = ctx.args.learning_rate
+        self._lr_schedule = getattr(ctx.args, "lr_schedule", "constant")
+        self._lr_update_count = 0
+        self._lr_total_updates = max(1, ctx.args.total_env_steps // ctx.args.batch_size)
+
+    def _step_lr(self):
+        """Apply learning rate schedule before each update."""
+        if self._lr_schedule == "linear_decay":
+            frac = 1.0 - self._lr_update_count / self._lr_total_updates
+            new_lr = self._initial_lr * max(0.0, frac)
+            for pg in self.opt["opt"].param_groups:
+                pg["lr"] = new_lr
+        self._lr_update_count += 1
+
     def prepare_batch(self, slot_view):
-        return compute_gae(self.ctx, slot_view)
+        return compute_gae(self.ctx, slot_view, returns_rms=self.returns_rms)
 
     def update(self, batch):
-        return ppo_lstm_update(self.ctx, self.policy, self.opt, batch, self.device)
+        self._step_lr()
+        stats = ppo_lstm_update(self.ctx, self.policy, self.opt, batch, self.device)
+        stats["learning_rate"] = self.opt["opt"].param_groups[0]["lr"]
+        return stats
 
     def save_checkpoint(self, save_dir: str, policy: nn.Module) -> None:
         """Save policy weights (ONNX export not supported for LSTM policies)."""
@@ -154,18 +177,20 @@ def ppo_lstm_update(
             logratio = newlogprob - logprob_old_mb
             ratio = logratio.exp()
 
+            # Differentiable KL for optional penalty term
+            approx_kl = ((ratio - 1) - logratio).mean()
             with torch.no_grad():
-                approx_kl = ((ratio - 1) - logratio).mean()
                 clipfracs.append(((ratio - 1.0).abs() > ctx.args.ppo_clip_range).float().mean().item())
 
             mb_advantages = adv_mb
             if ctx.args.normalize_adv:
                 mb_advantages = normalize_advantages(mb_advantages)
 
+            # Unbiased PPO clipping (SF-style): clip(r, 1/(1+e), 1+e)
+            clip_high = 1.0 + ctx.args.ppo_clip_range
+            clip_low = 1.0 / clip_high
             pg_loss1 = -mb_advantages * ratio
-            pg_loss2 = -mb_advantages * torch.clamp(
-                ratio, 1 - ctx.args.ppo_clip_range, 1 + ctx.args.ppo_clip_range
-            )
+            pg_loss2 = -mb_advantages * torch.clamp(ratio, clip_low, clip_high)
             pg_loss = torch.max(pg_loss1, pg_loss2).mean()
 
             newvalue_flat = newvalue.reshape(-1)
@@ -178,10 +203,14 @@ def ppo_lstm_update(
                 ctx.args.ppo_clip_value,
             )
             v_loss_clipped = (v_clipped - ret_flat) ** 2
-            v_loss = 0.5 * torch.max(v_loss_unclipped, v_loss_clipped).mean()
+            v_loss = torch.max(v_loss_unclipped, v_loss_clipped).mean()
 
             entropy_loss = entropy.mean()
             loss = pg_loss - ctx.args.entropy_coef * entropy_loss + v_loss * ctx.args.value_coef
+
+            kl_coeff = getattr(ctx.args, "kl_loss_coeff", 0.0)
+            if kl_coeff > 0.0:
+                loss = loss + kl_coeff * approx_kl
 
             optimizer.zero_grad()
             loss.backward()

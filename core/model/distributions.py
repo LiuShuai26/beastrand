@@ -5,7 +5,7 @@ from torch.distributions import Normal, Categorical
 
 class DiagGaussianDistribution(nn.Module):
     def __init__(self, in_dim: int, act_dim: int,
-                 init_log_std: float = -0.5,
+                 init_log_std: float = 0.0,
                  min_log_std: float = -5.0,
                  max_log_std: float = 2.0):
         super().__init__()

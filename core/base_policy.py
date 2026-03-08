@@ -16,6 +16,19 @@ class BasePolicy(ABC, nn.Module):
         self.obs_dim: int = int(np.prod(np.array(cfg.obs_shape)))
         self.act_dim: int = int(np.prod(np.array(cfg.act_shape)))
 
+        # Observation normalizer (SF-style normalize_input).
+        # Uses register_buffer so stats sync via ParameterServer.
+        self.obs_normalizer: Optional[nn.Module] = None
+        if getattr(cfg.args, "normalize_input", False):
+            from core.running_mean_std import RunningMeanStdTorch
+            self.obs_normalizer = RunningMeanStdTorch(self.obs_dim)
+
+    def normalize_obs(self, obs: torch.Tensor) -> torch.Tensor:
+        """Normalize observations if normalize_input is enabled."""
+        if self.obs_normalizer is not None:
+            return self.obs_normalizer(obs)
+        return obs
+
     # ---- required ----
     @abstractmethod
     def act(self, inputs: Dict[str, torch.Tensor], deterministic: bool = False) -> Dict[str, torch.Tensor]:
