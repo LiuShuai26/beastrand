@@ -201,6 +201,13 @@ def ppo_update(
 
     clipfracs = []
     approx_kl = torch.tensor(0.0, device=device)
+    analytical_kl = torch.tensor(0.0, device=device)
+
+    kl_coeff = getattr(ctx.args, "kl_loss_coeff", 0.0)
+    has_action_logits = "action_logits" in data
+    if has_action_logits:
+        from core.model.distributions import DiagGaussianDistribution
+        b_action_logits = data["action_logits"].float()
 
     n_mb = N / ctx.args.minibatch_size
     b_inds = np.arange(b_obs.shape[0])
@@ -217,9 +224,9 @@ def ppo_update(
             logratio = newlogprob - b_logprobs[mb_inds]
             ratio = torch.clamp(logratio.exp(), 0.05, 20.0)
 
-            # Differentiable KL for optional penalty term
-            approx_kl = ((ratio - 1) - logratio).mean()
+            # Approximate KL for monitoring (always computed, cheap)
             with torch.no_grad():
+                approx_kl = ((ratio - 1) - logratio).mean()
                 clipfracs.append(((ratio - 1.0).abs() > ctx.args.ppo_clip_range).float().mean().item())
 
             mb_advantages = b_advantages[mb_inds]
@@ -246,9 +253,18 @@ def ppo_update(
             entropy_loss = entropy.mean()
             loss = pg_loss - ctx.args.entropy_coef * entropy_loss + v_loss * ctx.args.value_coef
 
-            kl_coeff = getattr(ctx.args, "kl_loss_coeff", 0.0)
+            # KL penalty: analytical KL for continuous, approximate for discrete
             if kl_coeff > 0.0:
-                loss = loss + kl_coeff * approx_kl
+                if has_action_logits and "action_logits" in eval_out:
+                    analytical_kl = DiagGaussianDistribution.kl_from_logits(
+                        eval_out["action_logits"],        # new policy
+                        b_action_logits[mb_inds],         # old policy (from buffer)
+                    ).mean()
+                    loss = loss + kl_coeff * analytical_kl
+                else:
+                    # Fallback for discrete actions: differentiable approximate KL
+                    diff_approx_kl = ((ratio - 1) - logratio).mean()
+                    loss = loss + kl_coeff * diff_approx_kl
 
             optimizer.zero_grad()
             loss.backward()
@@ -265,6 +281,7 @@ def ppo_update(
         "value_std": b_values.std(unbiased=False).item(),
         "entropy_coef": float(ctx.args.entropy_coef),
         "approx_kl": approx_kl.item(),
+        "analytical_kl": analytical_kl.item() if has_action_logits else 0.0,
         "clip_frac": np.mean(clipfracs),
         "num_minibatches": float(n_mb),
     }

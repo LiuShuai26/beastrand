@@ -73,7 +73,10 @@ class PPOAMPPolicy(BasePolicy):
         logp = dist.log_prob(action)
         value = self._get_values(latent)  # (B, 2)
 
-        return {"action": action, "logp": logp, "value": value}
+        out = {"action": action, "logp": logp, "value": value}
+        if hasattr(dist, "action_logits"):
+            out["action_logits"] = dist.action_logits()
+        return out
 
     def supports_value(self) -> bool:
         return True
@@ -93,7 +96,10 @@ class PPOAMPPolicy(BasePolicy):
         entropy = dist.entropy()
         value = self._get_values(latent)  # (B, 2)
 
-        return {"logp": logp, "entropy": entropy, "value": value}
+        out = {"logp": logp, "entropy": entropy, "value": value}
+        if hasattr(dist, "action_logits"):
+            out["action_logits"] = dist.action_logits()
+        return out
 
     def build_optimizers(self, ctx, eps: float = 1e-6) -> dict:
         opt = optim.Adam(self.parameters(), lr=ctx.args.learning_rate, eps=eps)

@@ -248,6 +248,13 @@ class PPOAMPAlgorithm:
 
         clipfracs = []
         approx_kl = torch.tensor(0.0, device=device)
+        analytical_kl = torch.tensor(0.0, device=device)
+
+        kl_coeff = getattr(args, "kl_loss_coeff", 0.0)
+        has_action_logits = "action_logits" in data
+        if has_action_logits:
+            from core.model.distributions import DiagGaussianDistribution
+            b_action_logits = data["action_logits"].float()
 
         b_inds = np.arange(N)
         for epoch in range(args.train_epochs):
@@ -299,6 +306,18 @@ class PPOAMPAlgorithm:
                 entropy_loss = entropy.mean()
                 loss = pg_loss - args.entropy_coef * entropy_loss + v_loss * args.value_coef
 
+                # KL penalty: analytical KL for continuous, approximate for discrete
+                if kl_coeff > 0.0:
+                    if has_action_logits and "action_logits" in eval_out:
+                        analytical_kl = DiagGaussianDistribution.kl_from_logits(
+                            eval_out["action_logits"],
+                            b_action_logits[mb_inds],
+                        ).mean()
+                        loss = loss + kl_coeff * analytical_kl
+                    else:
+                        diff_approx_kl = ((ratio - 1) - logratio).mean()
+                        loss = loss + kl_coeff * diff_approx_kl
+
                 optimizer.zero_grad()
                 loss.backward()
                 nn.utils.clip_grad_norm_(policy.parameters(), args.max_grad_norm)
@@ -309,6 +328,7 @@ class PPOAMPAlgorithm:
             "v_loss": v_loss.item(),
             "entropy": entropy_loss.item(),
             "approx_kl": approx_kl.item(),
+            "analytical_kl": analytical_kl.item() if has_action_logits else 0.0,
             "clip_frac": np.mean(clipfracs) if clipfracs else 0.0,
         }
 

@@ -181,7 +181,7 @@ class Manager:
         num_workers = self.args.num_workers
         num_envs_per_worker = self.args.num_envs_per_worker
         T = self.args.rollout
-        num_traj = num_workers * num_envs_per_worker
+        num_traj = 2 * num_workers * num_envs_per_worker
 
         # 3. Create BufferMgr (shared tensors + queue + async ready flags)
         buffer_mgr = BufferMgr(

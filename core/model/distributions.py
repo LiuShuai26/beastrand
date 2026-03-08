@@ -1,6 +1,7 @@
 import torch
 import torch.nn as nn
 from torch.distributions import Normal, Categorical
+from torch.distributions.kl import kl_divergence
 
 
 class DiagGaussianDistribution(nn.Module):
@@ -36,6 +37,36 @@ class DiagGaussianDistribution(nn.Module):
 
     def entropy(self) -> torch.Tensor:
         return self._dist.entropy().sum(-1)  # [B]
+
+    def action_logits(self) -> torch.Tensor:
+        """Return concat(mean, log_std_expanded) as [B, act_dim*2].
+
+        Used to store the old policy's distribution parameters in the
+        trajectory buffer so that the learner can compute the analytical
+        KL divergence KL(π_new ‖ π_old) during PPO updates.
+        """
+        mean = self._dist.loc  # [B, A]
+        log_std = torch.clamp(self.log_std, self.min_log_std, self.max_log_std)
+        return torch.cat([mean, log_std.expand_as(mean)], dim=-1)
+
+    @staticmethod
+    def kl_from_logits(logits_new: torch.Tensor,
+                       logits_old: torch.Tensor) -> torch.Tensor:
+        """Analytical KL(π_new ‖ π_old) for diagonal Gaussian, per sample.
+
+        Args:
+            logits_new: [B, act_dim*2] concat(mean, log_std) from current policy.
+            logits_old: [B, act_dim*2] concat(mean, log_std) stored from old policy.
+
+        Returns:
+            [B] per-sample KL divergence (summed over action dimensions).
+        """
+        d = logits_new.shape[-1] // 2
+        mu_new, logstd_new = logits_new[..., :d], logits_new[..., d:]
+        mu_old, logstd_old = logits_old[..., :d], logits_old[..., d:]
+        dist_new = Normal(mu_new, logstd_new.exp())
+        dist_old = Normal(mu_old, logstd_old.exp())
+        return kl_divergence(dist_new, dist_old).sum(-1)  # [B]
 
 
 class CategoricalDistribution(nn.Module):

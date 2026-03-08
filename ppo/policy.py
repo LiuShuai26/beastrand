@@ -43,7 +43,10 @@ class PPOPolicy(BasePolicy):
             action = action.unsqueeze(-1).float()  # [B] -> [B, 1] for shared tensor
         value = self.value_head(latent).squeeze(-1)
 
-        return {"action": action, "logp": logp, "value": value}
+        out = {"action": action, "logp": logp, "value": value}
+        if hasattr(dist, "action_logits"):
+            out["action_logits"] = dist.action_logits()
+        return out
 
     def supports_value(self) -> bool:
         return True
@@ -63,7 +66,10 @@ class PPOPolicy(BasePolicy):
         entropy = dist.entropy()
         value = self.value_head(latent).squeeze(-1)
 
-        return {"logp": logp, "entropy": entropy, "value": value}
+        out = {"logp": logp, "entropy": entropy, "value": value}
+        if hasattr(dist, "action_logits"):
+            out["action_logits"] = dist.action_logits()
+        return out
 
     def build_optimizers(self, ctx, eps: float = 1e-6) -> dict:
         opt = optim.Adam(self.parameters(), lr=ctx.args.learning_rate, eps=eps)

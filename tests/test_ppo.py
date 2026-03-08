@@ -331,7 +331,7 @@ class TestPPOUpdate:
         expected_keys = {
             "pi_loss", "v_loss", "entropy", "adv_mean", "adv_std",
             "value_mean", "value_std", "entropy_coef", "approx_kl",
-            "clip_frac", "num_minibatches",
+            "analytical_kl", "clip_frac", "num_minibatches",
         }
         assert set(stats.keys()) == expected_keys
 

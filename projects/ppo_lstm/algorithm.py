@@ -128,6 +128,14 @@ def ppo_lstm_update(
 
     clipfracs = []
     approx_kl = torch.tensor(0.0, device=device)
+    analytical_kl = torch.tensor(0.0, device=device)
+
+    kl_coeff = getattr(ctx.args, "kl_loss_coeff", 0.0)
+    has_action_logits = "action_logits" in data
+    if has_action_logits:
+        from core.model.distributions import DiagGaussianDistribution
+        b_action_logits = data["action_logits"].float()
+        seq_action_logits = _reshape_sequences(b_action_logits, total_sequences, recurrence)
 
     seq_inds = np.arange(total_sequences)
     n_mb = total_sequences / seq_batch_size
@@ -148,12 +156,14 @@ def ppo_lstm_update(
             h0 = seq_rnn_h[mb_seq, 0]
             c0 = seq_rnn_c[mb_seq, 0]
             mask_mb = seq_mask[mb_seq] if seq_mask is not None else None
+            logits_old_mb = seq_action_logits[mb_seq] if has_action_logits else None
 
             state = (h0.unsqueeze(0).detach(), c0.unsqueeze(0).detach())
             h, c = state
             logp_news = []
             entropies = []
             values = []
+            logits_news = []
 
             for t in range(recurrence):
                 step_inputs: Dict[str, Any] = {
@@ -168,6 +178,8 @@ def ppo_lstm_update(
                 logp_news.append(out["logp"])
                 entropies.append(out["entropy"])
                 values.append(out["value"])
+                if has_action_logits and "action_logits" in out:
+                    logits_news.append(out["action_logits"])
                 h, c = out.get("rnn_state", (h, c))
 
             newlogprob = torch.stack(logp_news, dim=1)
@@ -177,9 +189,9 @@ def ppo_lstm_update(
             logratio = newlogprob - logprob_old_mb
             ratio = logratio.exp()
 
-            # Differentiable KL for optional penalty term
-            approx_kl = ((ratio - 1) - logratio).mean()
+            # Approximate KL for monitoring
             with torch.no_grad():
+                approx_kl = ((ratio - 1) - logratio).mean()
                 clipfracs.append(((ratio - 1.0).abs() > ctx.args.ppo_clip_range).float().mean().item())
 
             mb_advantages = adv_mb
@@ -208,9 +220,17 @@ def ppo_lstm_update(
             entropy_loss = entropy.mean()
             loss = pg_loss - ctx.args.entropy_coef * entropy_loss + v_loss * ctx.args.value_coef
 
-            kl_coeff = getattr(ctx.args, "kl_loss_coeff", 0.0)
+            # KL penalty: analytical KL for continuous, approximate for discrete
             if kl_coeff > 0.0:
-                loss = loss + kl_coeff * approx_kl
+                if logits_news and logits_old_mb is not None:
+                    new_logits = torch.stack(logits_news, dim=1)  # [S, T, act_dim*2]
+                    analytical_kl = DiagGaussianDistribution.kl_from_logits(
+                        new_logits, logits_old_mb,
+                    ).mean()
+                    loss = loss + kl_coeff * analytical_kl
+                else:
+                    diff_approx_kl = ((ratio - 1) - logratio).mean()
+                    loss = loss + kl_coeff * diff_approx_kl
 
             optimizer.zero_grad()
             loss.backward()
@@ -227,6 +247,7 @@ def ppo_lstm_update(
         "value_std": b_values.std(unbiased=False).item(),
         "entropy_coef": float(ctx.args.entropy_coef),
         "approx_kl": approx_kl.item(),
+        "analytical_kl": analytical_kl.item() if has_action_logits else 0.0,
         "clip_frac": float(np.mean(clipfracs)) if clipfracs else 0.0,
         "num_minibatches": float(n_mb),
     }

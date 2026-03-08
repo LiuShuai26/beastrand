@@ -8,7 +8,7 @@ class PPODataRecord(DataRecordBase):
     @staticmethod
     def alloc_specs(ctx, T: int, obs_shape: Tuple[int, ...], act_shape: Tuple[int, ...]):
         # Discrete action example: action shape [T, 1] int64; for Box, use float32 [T, *act_shape]
-        return {
+        specs = {
             "obs":       ((T+1, *obs_shape), "float32"),
             "action":    ((T, *act_shape),          "float32"),   # or (T, *act_shape) float32 for Box
             "reward": ((T,), "float32"),
@@ -21,10 +21,15 @@ class PPODataRecord(DataRecordBase):
             "return": ((T,), "float32"),
             "model_version": ((T,), "int32"),
         }
+        # Store distribution parameters for analytical KL (continuous only)
+        if getattr(ctx, "act_kind", None) == "box":
+            act_dim = act_shape[0]
+            specs["action_logits"] = ((T, act_dim * 2), "float32")
+        return specs
 
     @staticmethod
     def build_batch(ctx, view: Dict[str, np.ndarray]) -> Dict[str, np.ndarray]:
-        return {
+        batch = {
             "obs":  view["obs"].astype(np.float32),
             "act":  view["action"],  # keep dtype (int64 for discrete; float32 for Box)
             "logp": view["log_prob"].astype(np.float32),
@@ -32,3 +37,6 @@ class PPODataRecord(DataRecordBase):
             "ret":  view["return"].astype(np.float32),
             "val":  view["value"].astype(np.float32),
         }
+        if "action_logits" in view:
+            batch["action_logits"] = view["action_logits"].astype(np.float32)
+        return batch

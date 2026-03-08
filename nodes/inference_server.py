@@ -219,6 +219,10 @@ class InferenceServer:
             values = out["value"] if self.device.type == "cpu" else out["value"].cpu()
             self.traj_tensors["value"][ti_t, s_t] = values
 
+        if "action_logits" in out and "action_logits" in self.traj_tensors:
+            al = out["action_logits"] if self.device.type == "cpu" else out["action_logits"].cpu()
+            self.traj_tensors["action_logits"][ti_t, s_t] = al
+
         if self.use_lstm and "rnn_state" in out:
             h_out, c_out = out["rnn_state"]
             if self.device.type != "cpu":

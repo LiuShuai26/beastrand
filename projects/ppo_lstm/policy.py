@@ -62,7 +62,10 @@ class PPOLSTMPolicy(BasePolicy):
         logp = dist.log_prob(action)
         value = self.value_head(latent).squeeze(-1)
 
-        return {"action": action, "logp": logp, "value": value, "rnn_state": (h, c)}
+        out = {"action": action, "logp": logp, "value": value, "rnn_state": (h, c)}
+        if hasattr(dist, "action_logits"):
+            out["action_logits"] = dist.action_logits()
+        return out
 
     def supports_value(self) -> bool:
         return True
@@ -111,7 +114,10 @@ class PPOLSTMPolicy(BasePolicy):
         entropy = dist.entropy()
         value = self.value_head(latent).squeeze(-1)
 
-        return {"logp": logp, "entropy": entropy, "value": value, "rnn_state": (h, c)}
+        out = {"logp": logp, "entropy": entropy, "value": value, "rnn_state": (h, c)}
+        if hasattr(dist, "action_logits"):
+            out["action_logits"] = dist.action_logits()
+        return out
 
     def build_optimizers(self, ctx, eps: float = 1e-6) -> dict:
         opt = optim.Adam(self.parameters(), lr=ctx.args.learning_rate, eps=eps)

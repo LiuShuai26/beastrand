@@ -15,7 +15,7 @@ class PPOAMPDataRecord(DataRecordBase):
     def alloc_specs(ctx, T: int, obs_shape: Tuple[int, ...], act_shape: Tuple[int, ...]):
         amp_obs_dim = ctx.args.amp_obs_dim
         amp_transition_dim = amp_obs_dim * 2
-        return {
+        specs = {
             "obs":            ((T + 1, *obs_shape), "float32"),
             "action":         ((T, *act_shape), "float32"),
             "reward":         ((T,), "float32"),            # task reward (from env)
@@ -29,10 +29,15 @@ class PPOAMPDataRecord(DataRecordBase):
             "amp_transition": ((T, amp_transition_dim), "float32"),  # (s_t, s_{t+1}) pairs
             "model_version":  ((T,), "int32"),
         }
+        # Store distribution parameters for analytical KL (continuous only)
+        if getattr(ctx, "act_kind", None) == "box":
+            act_dim = act_shape[0]
+            specs["action_logits"] = ((T, act_dim * 2), "float32")
+        return specs
 
     @staticmethod
     def build_batch(ctx, view: Dict[str, np.ndarray]) -> Dict[str, np.ndarray]:
-        return {
+        batch = {
             "obs":            view["obs"].astype(np.float32),
             "act":            view["action"],
             "logp":           view["log_prob"].astype(np.float32),
@@ -42,3 +47,6 @@ class PPOAMPDataRecord(DataRecordBase):
             "amp_transition": view["amp_transition"].astype(np.float32),
             "done":           view["done"],
         }
+        if "action_logits" in view:
+            batch["action_logits"] = view["action_logits"].astype(np.float32)
+        return batch
