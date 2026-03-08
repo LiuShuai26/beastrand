@@ -1,4 +1,4 @@
-# ppo_config.py
+# ppo/config.py
 from dataclasses import dataclass, field
 from typing import Optional, List
 import time
@@ -6,13 +6,13 @@ import time
 @dataclass
 class Args:
 
-    data_record_path: str = field(default="modules.dataset.data_record.ppo_data_record.PPODataRecord", init=False)
-    policy_path: str = field(default="modules.policy.ppo_policy.PPOPolicy", init=False)
-    algorithm_path: str = field(default="modules.algos.ppo.PPOAlgorithm", init=False)
+    data_record_path: str = field(default="ppo.data_record.PPODataRecord", init=False)
+    policy_path: str = field(default="ppo.policy.PPOPolicy", init=False)
+    algorithm_path: str = field(default="ppo.algorithm.PPOAlgorithm", init=False)
 
     bootstrap_value: bool = field(default=True, init=False)
 
-    make_env_path: Optional[str] = field(default=None, metadata={"help": "Dotted path to custom env factory (e.g. modules.envs.make_env_amp.make_env_amp)"})
+    make_env_path: Optional[str] = field(default=None, metadata={"help": "Dotted path to custom env factory (e.g. core.envs.make_env.make_env)"})
 
     inference_device: str = field(default="cpu", metadata={"help": "InferenceServer device (cpu/cuda/mps)"})
     learner_device: str = field(default="cpu", metadata={"help": "Learner device (cpu/cuda/mps)"})
@@ -31,17 +31,6 @@ class Args:
 
     # policy
     mlp_layers: List[int] = field(default_factory=lambda: [256, 256, 256], metadata={"help": "MLP layers"})
-    use_lstm: bool = field(default=False, metadata={"help": "Use LSTM in policy"})
-    lstm_hidden_size: int = field(default=128, metadata={"help": "Hidden size for LSTM"})
-    recurrence: int = field(
-        default=-1,
-        metadata={
-            "help": (
-                "Trajectory length for backpropagation through time. Default value (-1) "
-                "matches the rollout length."
-            )
-        },
-    )
 
     # RL specifics
     gamma: float = field(default=0.99, metadata={"help": "Discount factor"})
@@ -82,18 +71,6 @@ class Args:
         assert self.num_envs_per_worker > 0
 
     def __post_init__(self):
-        if getattr(self, "use_lstm", False):
-            self.data_record_path = "modules.dataset.data_record.ppo_lstm_data_record.PPOLSTMDataRecord"
-            self.policy_path = "modules.policy.ppo_lstm_policy.PPOLSTMPolicy"
-            self.algorithm_path = "modules.algos.ppo_lstm.PPOLSTMAlgorithm"
-        else:
-            self.data_record_path = "modules.dataset.data_record.ppo_data_record.PPODataRecord"
-            self.policy_path = "modules.policy.ppo_policy.PPOPolicy"
-            self.algorithm_path = "modules.algos.ppo.PPOAlgorithm"
-        if int(getattr(self, "recurrence", -1)) == -1:
-            self.recurrence = int(self.rollout)
-        if int(self.recurrence) <= 0:
-            raise ValueError("recurrence must be -1 (for rollout length) or a positive integer")
         if self.batch_size % self.minibatch_size != 0:
             raise ValueError("batch_size must be a multiple of minibatch_size")
         if self.batch_size % self.rollout != 0:

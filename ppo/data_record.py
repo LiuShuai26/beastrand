@@ -1,8 +1,8 @@
-# modules/dataset/ppo_data_record.py
+# ppo/data_record.py
 from __future__ import annotations
 from typing import Dict, Tuple
 import numpy as np
-from .base_record import DataRecordBase
+from core.base_record import DataRecordBase
 
 class PPODataRecord(DataRecordBase):
     @staticmethod

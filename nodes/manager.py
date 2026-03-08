@@ -20,7 +20,7 @@ import numpy as np
 import torch
 import gymnasium as gym
 
-from modules.dataset.buffer_mgr import BufferMgr
+from core.buffer_mgr import BufferMgr
 from utils.import_utils import get_object_from_path
 from utils.model_sharing import ParameterServer
 

@@ -11,7 +11,7 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 
-from .ppo import compute_gae, normalize_advantages, to_torch
+from ppo.algorithm import compute_gae, normalize_advantages, to_torch
 
 
 class PPOLSTMAlgorithm:

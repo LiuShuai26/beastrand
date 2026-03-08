@@ -1,4 +1,4 @@
-# modules/dataset/data_record/ppo_amp_data_record.py
+# projects/ppo_amp/data_record.py
 """
 Data record for PPO-AMP: extends PPO layout with dual value heads,
 per-group returns, and AMP transition pairs for discriminator training.
@@ -6,7 +6,7 @@ per-group returns, and AMP transition pairs for discriminator training.
 from __future__ import annotations
 from typing import Dict, Tuple
 import numpy as np
-from .base_record import DataRecordBase
+from core.base_record import DataRecordBase
 
 
 class PPOAMPDataRecord(DataRecordBase):

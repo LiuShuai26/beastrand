@@ -10,12 +10,14 @@ beatstrand is a distributed reinforcement learning framework for high-throughput
 
 **Run training:**
 ```bash
-python -m run.run_ppo.train_ppo          # PPO (default: Humanoid-v5)
-python -m run.run_ppo.train_ppo --env-id CartPole-v1 --num-workers 4
+python -m ppo.train                      # PPO (default: Humanoid-v5)
+python -m ppo.train --env-id CartPole-v1 --num-workers 4
 
-# Beast .so environment (e.g. HumanoidEnv)
-python -m run.run_ppo_amp.train_ppo_amp --env-id HumanoidEnv --keyframe-file path/to/keyframes.json
-python -m run.run_ppo.train_ppo --env-id HumanoidEnv --make-env-path modules.envs.make_env_amp.make_env_amp
+# PPO-LSTM
+python -m projects.ppo_lstm.train --env-id Humanoid-v5
+
+# Beast .so environment with PPO-AMP
+python -m projects.ppo_amp.train --env-id HumanoidEnv --keyframe-file path/to/keyframes.json
 ```
 
 CLI parsing uses `tyro` — all fields in the `Args` dataclass become CLI flags (use `--help` for full list).
@@ -46,7 +48,7 @@ The `Manager` (nodes/manager.py) is the orchestrator. It creates shared resource
 
 ### Shared memory: PyTorch share_memory_()
 
-**BufferMgr** (modules/dataset/buffer_mgr.py) pre-allocates all trajectory tensors as `[num_traj, T+1, *shape]` PyTorch tensors with `share_memory_()`. Workers index into these via slot indices from a `mp.Queue`. No attach/detach, no extra file descriptors.
+**BufferMgr** (core/buffer_mgr.py) pre-allocates all trajectory tensors as `[num_traj, T+1, *shape]` PyTorch tensors with `share_memory_()`. Workers index into these via slot indices from a `mp.Queue`. No attach/detach, no extra file descriptors.
 
 **ParameterServer** (utils/model_sharing.py) holds a shared-memory copy of policy weights. Learner calls `param_server.update(policy)` after each training step. InferenceServer polls `policy_version` and loads when stale via `ParameterClient.ensure_updated()`.
 
@@ -74,7 +76,7 @@ Inference responses use shared memory flags (`ready_flags[worker_idx, env_idx]`)
 Two environment backends are supported:
 
 1. **Gymnasium (default)** — any env registered in the Gymnasium registry (e.g. `Humanoid-v5`, `CartPole-v1`), loaded via `gym.make()`.
-2. **Beast .so** — custom compiled C++ environments (e.g. `HumanoidEnv.cpython-310-darwin.so`), loaded directly via `importlib.import_module` and wrapped with a built-in `BeastGymWrapper` (no external dependencies). The factory in `modules/envs/make_env_amp.py` tries Beast first; if the `.so` is not found, it falls back to `gym.make()`.
+2. **Beast .so** — custom compiled C++ environments (e.g. `HumanoidEnv.cpython-310-darwin.so`), loaded directly via `importlib.import_module` and wrapped with a built-in `BeastGymWrapper` (no external dependencies). The factory in `projects/ppo_amp/make_env.py` tries Beast first; if the `.so` is not found, it falls back to `gym.make()`.
 
 The environment factory is pluggable via `make_env_path` in the config (dotted Python path). `probe_env()` in Manager also respects this path so that env specs are correctly probed for custom backends.
 
@@ -83,14 +85,14 @@ The environment factory is pluggable via `make_env_path` in the config (dotted P
 Config dataclasses (`Args`) specify `data_record_path`, `policy_path`, `algorithm_path`, and optionally `make_env_path` as dotted Python paths. These are resolved at runtime via `get_object_from_path()`.
 
 Key module interfaces:
-- **BasePolicy** (modules/policy/base_policy.py) — `nn.Module`; must implement `act()`, optionally `value()`, `evaluate_actions()`
+- **BasePolicy** (core/base_policy.py) — `nn.Module`; must implement `act()`, optionally `value()`, `evaluate_actions()`
 - **Algorithm** — protocol with `prepare_batch()` and `update()` (no base class; each algo is self-contained, CleanRL-style)
-- **DataRecord** (modules/dataset/data_record/) — defines `alloc_specs()` for tensor layout and `build_batch()` for training tensors
+- **DataRecord** (core/base_record.py) — defines `alloc_specs()` for tensor layout and `build_batch()` for training tensors
 
 ### Key conventions
 
 - All child processes call `child_sig_setup()` (ignore SIGINT) and `child_logging_setup()` on start
-- Shared entry-point boilerplate (`setup_logging`, `set_start_method`) lives in `run/common.py`
+- Shared entry-point boilerplate (`setup_logging`, `set_start_method`) lives in `core/common.py`
 - Shared node utilities (`ProfileAccum`, `child_sig_setup`, `child_logging_setup`) live in `nodes/common.py`
 - Logging uses a centralized logger process via `log_scalar()` → TensorBoard
 - Process start method is `spawn` (required for CUDA safety)

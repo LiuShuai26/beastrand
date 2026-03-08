@@ -23,7 +23,7 @@ from typing import Dict, List
 import numpy as np
 import torch
 
-from modules.envs.make_env import make_env
+from core.envs.make_env import make_env
 from nodes.common import child_logging_setup, child_sig_setup, ProfileAccum
 from nodes.logger import child_attach_logger, log_scalar
 from strandbus.strandbus import StrandBus

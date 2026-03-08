@@ -1,4 +1,4 @@
-# algos/ppo.py
+# ppo/algorithm.py
 """
 Minimal PPO update utilities.
 
@@ -126,6 +126,13 @@ def ppo_update(
     """
     Runs PPO for ctx.args.epochs over minibatches sampled from `batch`.
     Expects batch keys: obs, act, logp (old), adv, ret, and optionally valu (old V(s)).
+
+    NOTE: Uses standard PPO clipped ratio (not V-trace). This works well when
+    policy lag is small, which is typical for our worker/learner
+    ratio. If scaling to hundreds of workers or very slow envs where lag grows
+    large, consider adding V-trace off-policy correction to fix
+    value target bias that PPO clip alone cannot handle. See Sample Factory's
+    ``--with_vtrace`` for reference.
     """
     policy.train()
 

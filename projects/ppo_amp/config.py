@@ -1,4 +1,4 @@
-# run/run_ppo_amp/ppo_amp_config.py
+# projects/ppo_amp/config.py
 """
 Configuration for PPO-AMP training.
 
@@ -13,10 +13,10 @@ import time
 @dataclass
 class Args:
     # --- Module paths (PPO-AMP variants, not CLI-configurable) ---
-    data_record_path: str = field(default="modules.dataset.data_record.ppo_amp_data_record.PPOAMPDataRecord", init=False)
-    policy_path: str = field(default="modules.policy.ppo_amp_policy.PPOAMPPolicy", init=False)
-    algorithm_path: str = field(default="modules.algos.ppo_amp.PPOAMPAlgorithm", init=False)
-    make_env_path: str = field(default="modules.envs.make_env_amp.make_env_amp", init=False)
+    data_record_path: str = field(default="projects.ppo_amp.data_record.PPOAMPDataRecord", init=False)
+    policy_path: str = field(default="projects.ppo_amp.policy.PPOAMPPolicy", init=False)
+    algorithm_path: str = field(default="projects.ppo_amp.algorithm.PPOAMPAlgorithm", init=False)
+    make_env_path: str = field(default="projects.ppo_amp.make_env.make_env_amp", init=False)
 
     bootstrap_value: bool = field(default=True, init=False)
 

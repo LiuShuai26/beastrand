@@ -1,4 +1,4 @@
-# modules/algos/ppo_amp.py
+# projects/ppo_amp/algorithm.py
 """
 PPO-AMP algorithm: PPO with Adversarial Motion Priors.
 
@@ -22,10 +22,10 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 
-from modules.algos.ppo import normalize_advantages
-from modules.amp.discriminator import AMPDiscriminator
-from modules.amp.motion_buffer import AMPMotionBuffer
-from modules.amp.rewards import compute_disc_loss, compute_style_reward
+from ppo.algorithm import normalize_advantages
+from projects.ppo_amp.discriminator import AMPDiscriminator
+from projects.ppo_amp.motion_buffer import AMPMotionBuffer
+from projects.ppo_amp.rewards import compute_disc_loss, compute_style_reward
 from utils.checkpoint_utils import ActorForExport, ensure_single_onnx_file
 from utils.tensor_utils import to_torch
 

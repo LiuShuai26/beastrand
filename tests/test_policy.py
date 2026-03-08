@@ -1,9 +1,9 @@
 import torch
 import pytest
 
-from modules.policy.ppo_policy import PPOPolicy
-from modules.policy.ppo_lstm_policy import PPOLSTMPolicy
-from modules.dataset.data_record.ppo_lstm_data_record import PPOLSTMDataRecord
+from ppo.policy import PPOPolicy
+from projects.ppo_lstm.policy import PPOLSTMPolicy
+from projects.ppo_lstm.data_record import PPOLSTMDataRecord
 
 
 class DummyCfg:

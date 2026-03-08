@@ -1,4 +1,4 @@
-# modules/policy/ppo_lstm_policy.py
+# projects/ppo_lstm/policy.py
 
 import numpy as np
 from functools import partial
@@ -8,9 +8,9 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 
-from modules.model.basic_model import MLP, init_weights
-from modules.model.distributions import DiagGaussianDistribution
-from modules.policy.base_policy import BasePolicy
+from core.model.basic_model import MLP, init_weights
+from core.model.distributions import DiagGaussianDistribution
+from core.base_policy import BasePolicy
 
 
 class PPOLSTMPolicy(BasePolicy):

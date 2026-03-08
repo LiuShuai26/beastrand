@@ -4,7 +4,7 @@ import numpy as np
 import pytest
 import torch
 
-from modules.algos.ppo import compute_gae, normalize_advantages, ppo_update
+from ppo.algorithm import compute_gae, normalize_advantages, ppo_update
 from utils.tensor_utils import to_torch
 
 
@@ -294,7 +294,7 @@ class TestPPOUpdate:
     @pytest.fixture()
     def setup(self):
         """Create a small policy, optimizer, and fake batch."""
-        from modules.policy.ppo_policy import PPOPolicy
+        from ppo.policy import PPOPolicy
 
         class Cfg:
             obs_shape = (4,)

@@ -6,8 +6,8 @@ import logging
 from typing import Optional
 
 import tyro
-from run.run_ppo.ppo_config import Args
-from run.common import setup_logging, set_start_method
+from ppo.config import Args
+from core.common import setup_logging, set_start_method
 from nodes.manager import Manager
 
 
