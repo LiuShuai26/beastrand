@@ -113,7 +113,14 @@ def main(ctx, logger_queue) -> None:
         lag = int(buffer_mgr.policy_version.item()) - avg_ver
         return lag > _max_policy_lag
 
+    # Ingest-thread profiling state (shared via closure).
+    _ingest_gae_total = 0.0    # cumulative prepare_batch time (seconds)
+    _ingest_traj_count = 0     # trajectories processed
+    _ingest_last_log = time.monotonic()
+    _ingest_log_interval = 10.0  # seconds between ingest profile logs
+
     def ingest_worker():
+        nonlocal _ingest_gae_total, _ingest_traj_count, _ingest_last_log
         pending = []  # list of (traj_idx, view_dict)
         _discarded = 0
         _last_discard_log = time.monotonic()
@@ -145,7 +152,10 @@ def main(ctx, logger_queue) -> None:
 
                 # Phase 1: lightweight per-traj prep (numpy only for batched path,
                 # or full GAE computation for the legacy path)
+                _t_gae = time.monotonic()
                 algorithm.prepare_batch(view)
+                _ingest_gae_total += time.monotonic() - _t_gae
+                _ingest_traj_count += 1
 
                 if _use_batched_finalize:
                     # Accumulate until batch_trigger, then flush all at once
@@ -165,13 +175,22 @@ def main(ctx, logger_queue) -> None:
                 with have_batch:
                     have_batch.notify()
 
-            # Log discard stats periodically
+            # Log discard + ingest profile stats periodically
             now = time.monotonic()
             if _discarded > 0 and now - _last_discard_log > 10.0:
                 logging.info("[learner] discarded %d stale trajectories (max_policy_lag=%d)",
                              _discarded, _max_policy_lag)
                 _discarded = 0
                 _last_discard_log = now
+            if _ingest_traj_count > 0 and now - _ingest_last_log >= _ingest_log_interval:
+                avg_gae_ms = _ingest_gae_total / _ingest_traj_count * 1000.0
+                logging.info(
+                    "[learner/ingest] gae=%.2fms/traj  trajs=%d  (last %.0fs)",
+                    avg_gae_ms, _ingest_traj_count, _ingest_log_interval,
+                )
+                _ingest_gae_total = 0.0
+                _ingest_traj_count = 0
+                _ingest_last_log = now
 
         # Flush any remaining trajectories on shutdown so traj buffers
         # are recycled and workers blocked on traj_queue.get() unblock.
@@ -208,8 +227,8 @@ def main(ctx, logger_queue) -> None:
     # ------------------------------------------------------------------
     try:
         while not ctx.stop_event.is_set():
-            start_get_data = time.perf_counter()
-
+            # ---- 1. Wait for data ----------------------------------------
+            t0 = time.perf_counter()
             with have_batch:
                 ready = have_batch.wait_for(
                     lambda: batch_buf.valid_steps >= learning_starts or ctx.stop_event.is_set(),
@@ -221,6 +240,10 @@ def main(ctx, logger_queue) -> None:
             if not ready:
                 continue
 
+            wait_ms = (time.perf_counter() - t0) * 1000.0
+
+            # ---- 2. Build batch (numpy → tensor) -------------------------
+            t1 = time.perf_counter()
             with buf_lock:
                 view = batch_buf.get_batch()
 
@@ -237,18 +260,20 @@ def main(ctx, logger_queue) -> None:
             else:
                 policy_lag = 0
 
-            end_get_data = time.perf_counter()
-            get_data_time = (end_get_data - start_get_data) * 1000.0
+            build_batch_ms = (time.perf_counter() - t1) * 1000.0
 
-            # --- Train ---
+            # ---- 3. Train ------------------------------------------------
+            t2 = time.perf_counter()
             stats = algorithm.update(batch)
-            end_update = time.perf_counter()
-            train_batch_time = (end_update - end_get_data) * 1000.0
-            training_time = (end_update - last_training_time) * 1000.0
-            last_training_time = end_update
+            update_ms = (time.perf_counter() - t2) * 1000.0
 
-            # --- Update shared weights ---
+            # ---- 4. Sync weights -----------------------------------------
+            t3 = time.perf_counter()
             version = param_server.update(policy)
+            weight_sync_ms = (time.perf_counter() - t3) * 1000.0
+
+            total_ms = (time.perf_counter() - last_training_time) * 1000.0
+            last_training_time = time.perf_counter()
 
             # --- Periodic checkpoint ---
             if _ckpt_version_interval > 0 and version - _last_ckpt_version >= _ckpt_version_interval:
@@ -257,9 +282,11 @@ def main(ctx, logger_queue) -> None:
 
             # --- Logging ---
             log_scalar(run="learner", tag="policy_lag", value=policy_lag, step=version)
-            log_scalar(run="learner", tag="get_data_time_ms", value=get_data_time, step=version)
-            log_scalar(run="learner", tag="train_batch_time_ms", value=train_batch_time, step=version)
-            log_scalar(run="learner", tag="total_train_time_ms", value=training_time, step=version)
+            log_scalar(run="learner", tag="wait_for_data_ms", value=wait_ms, step=version)
+            log_scalar(run="learner", tag="build_batch_ms", value=build_batch_ms, step=version)
+            log_scalar(run="learner", tag="update_ms", value=update_ms, step=version)
+            log_scalar(run="learner", tag="weight_sync_ms", value=weight_sync_ms, step=version)
+            log_scalar(run="learner", tag="total_iter_ms", value=total_ms, step=version)
             for k, v in stats.items():
                 try:
                     log_scalar(run="learner", tag=k, value=float(v), step=version)
