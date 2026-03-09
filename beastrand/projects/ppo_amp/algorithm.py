@@ -22,12 +22,12 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 
-from ppo.algorithm import normalize_advantages
-from projects.ppo_amp.discriminator import AMPDiscriminator
-from projects.ppo_amp.motion_buffer import AMPMotionBuffer
-from projects.ppo_amp.rewards import compute_disc_loss, compute_style_reward
-from utils.checkpoint_utils import ActorForExport, ensure_single_onnx_file
-from utils.tensor_utils import to_torch
+from beastrand.ppo.algorithm import normalize_advantages
+from beastrand.projects.ppo_amp.discriminator import AMPDiscriminator
+from beastrand.projects.ppo_amp.motion_buffer import AMPMotionBuffer
+from beastrand.projects.ppo_amp.rewards import compute_disc_loss, compute_style_reward
+from beastrand.utils.checkpoint_utils import ActorForExport, ensure_single_onnx_file
+from beastrand.utils.tensor_utils import to_torch
 
 G = 2  # reward groups: 0 = task, 1 = style
 
@@ -253,7 +253,7 @@ class PPOAMPAlgorithm:
         kl_coeff = getattr(args, "kl_loss_coeff", 0.0)
         has_action_logits = "action_logits" in data
         if has_action_logits:
-            from core.model.distributions import DiagGaussianDistribution
+            from beastrand.core.model.distributions import DiagGaussianDistribution
             b_action_logits = data["action_logits"].float()
 
         b_inds = np.arange(N)

@@ -11,7 +11,7 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 
-from ppo.algorithm import compute_gae, normalize_advantages, to_torch
+from beastrand.ppo.algorithm import compute_gae, normalize_advantages, to_torch
 
 
 class PPOLSTMAlgorithm:
@@ -23,7 +23,7 @@ class PPOLSTMAlgorithm:
 
         self.returns_rms = None
         if getattr(ctx.args, "normalize_returns", False):
-            from core.running_mean_std import RunningMeanStd
+            from beastrand.core.running_mean_std import RunningMeanStd
             self.returns_rms = RunningMeanStd()
 
         # LR schedule
@@ -133,7 +133,7 @@ def ppo_lstm_update(
     kl_coeff = getattr(ctx.args, "kl_loss_coeff", 0.0)
     has_action_logits = "action_logits" in data
     if has_action_logits:
-        from core.model.distributions import DiagGaussianDistribution
+        from beastrand.core.model.distributions import DiagGaussianDistribution
         b_action_logits = data["action_logits"].float()
         seq_action_logits = _reshape_sequences(b_action_logits, total_sequences, recurrence)
 

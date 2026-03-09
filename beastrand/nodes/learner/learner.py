@@ -18,12 +18,12 @@ from typing import Any, Dict
 import numpy as np
 import torch
 
-from utils.import_utils import get_object_from_path
+from beastrand.utils.import_utils import get_object_from_path
 
-from nodes.common import child_logging_setup, child_sig_setup
-from nodes.logger import child_attach_logger, log_scalar
-from nodes.learner.batch_buffer import BatchBuffer
-from strandbus.strandbus import StrandBus
+from beastrand.nodes.common import child_logging_setup, child_sig_setup
+from beastrand.nodes.logger import child_attach_logger, log_scalar
+from beastrand.nodes.learner.batch_buffer import BatchBuffer
+from beastrand.strandbus.strandbus import StrandBus
 
 
 def main(ctx, logger_queue) -> None:
@@ -49,7 +49,7 @@ def main(ctx, logger_queue) -> None:
     # --- Weight sharing: use ParameterServer created by Manager ---
     param_server = ctx.param_server
     # Load initial shared weights into our policy so we start consistent
-    from utils.model_sharing import _load_state_into_model
+    from beastrand.utils.model_sharing import _load_state_into_model
     _load_state_into_model(param_server.shared_state, policy)
     # Immediately push our (possibly re-initialized) weights back
     param_server.update(policy)

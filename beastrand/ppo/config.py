@@ -6,9 +6,9 @@ import time
 @dataclass
 class Args:
 
-    data_record_path: str = field(default="ppo.data_record.PPODataRecord", init=False)
-    policy_path: str = field(default="ppo.policy.PPOPolicy", init=False)
-    algorithm_path: str = field(default="ppo.algorithm.PPOAlgorithm", init=False)
+    data_record_path: str = field(default="beastrand.ppo.data_record.PPODataRecord", init=False)
+    policy_path: str = field(default="beastrand.ppo.policy.PPOPolicy", init=False)
+    algorithm_path: str = field(default="beastrand.ppo.algorithm.PPOAlgorithm", init=False)
 
     bootstrap_value: bool = field(default=True, init=False)
 

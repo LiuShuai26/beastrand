@@ -13,7 +13,7 @@ from typing import Dict, Tuple
 import torch
 import numpy as np
 
-from utils.import_utils import get_object_from_path
+from beastrand.utils.import_utils import get_object_from_path
 
 _STR_TO_TORCH_DTYPE = {
     "float32": torch.float32,

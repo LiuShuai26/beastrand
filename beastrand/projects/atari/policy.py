@@ -9,9 +9,9 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 
-from core.model.basic_model import NatureCNN, init_weights
-from core.model.distributions import CategoricalDistribution
-from core.base_policy import BasePolicy
+from beastrand.core.model.basic_model import NatureCNN, init_weights
+from beastrand.core.model.distributions import CategoricalDistribution
+from beastrand.core.base_policy import BasePolicy
 
 
 class AtariPolicy(BasePolicy):

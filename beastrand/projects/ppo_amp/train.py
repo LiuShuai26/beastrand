@@ -6,9 +6,9 @@ import logging
 from typing import Optional
 
 import tyro
-from projects.ppo_amp.config import Args
-from core.common import setup_logging, set_start_method
-from nodes.manager import Manager
+from beastrand.projects.ppo_amp.config import Args
+from beastrand.core.common import setup_logging, set_start_method
+from beastrand.nodes.manager import Manager
 
 
 def _configure_from_so(args: Args) -> None:

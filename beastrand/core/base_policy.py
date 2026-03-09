@@ -20,7 +20,7 @@ class BasePolicy(ABC, nn.Module):
         # Uses register_buffer so stats sync via ParameterServer.
         self.obs_normalizer: Optional[nn.Module] = None
         if getattr(cfg.args, "normalize_input", False):
-            from core.running_mean_std import RunningMeanStdTorch
+            from beastrand.core.running_mean_std import RunningMeanStdTorch
             self.obs_normalizer = RunningMeanStdTorch(self.obs_dim)
 
     def normalize_obs(self, obs: torch.Tensor) -> torch.Tensor:

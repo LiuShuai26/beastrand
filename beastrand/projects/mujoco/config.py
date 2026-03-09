@@ -3,7 +3,7 @@
 
 from dataclasses import dataclass, field
 
-from ppo.config import Args as PPOArgs
+from beastrand.ppo.config import Args as PPOArgs
 
 
 @dataclass

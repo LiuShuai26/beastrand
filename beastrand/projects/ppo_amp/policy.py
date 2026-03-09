@@ -16,9 +16,9 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 
-from core.model.basic_model import MLP, init_weights
-from core.model.distributions import DiagGaussianDistribution
-from core.base_policy import BasePolicy
+from beastrand.core.model.basic_model import MLP, init_weights
+from beastrand.core.model.distributions import DiagGaussianDistribution
+from beastrand.core.base_policy import BasePolicy
 
 
 G = 2  # reward groups: 0 = task, 1 = style

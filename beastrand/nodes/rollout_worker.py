@@ -24,10 +24,10 @@ from typing import Dict, List
 import numpy as np
 import torch
 
-from core.envs.make_env import make_env
-from nodes.common import child_logging_setup, child_sig_setup, ProfileAccum
-from nodes.logger import child_attach_logger, log_scalar
-from strandbus.strandbus import StrandBus
+from beastrand.core.envs.make_env import make_env
+from beastrand.nodes.common import child_logging_setup, child_sig_setup, ProfileAccum
+from beastrand.nodes.logger import child_attach_logger, log_scalar
+from beastrand.strandbus.strandbus import StrandBus
 
 # Must match inference_server.py
 REQ_FMT = "<iiiii"
@@ -94,7 +94,7 @@ class RolloutWorker:
         # --- Resolve env factory (configurable via args.make_env_path) ---
         _make_env_path = getattr(args, "make_env_path", None)
         if _make_env_path:
-            from utils.import_utils import get_object_from_path
+            from beastrand.utils.import_utils import get_object_from_path
             _make_env = get_object_from_path(_make_env_path)
         else:
             _make_env = make_env

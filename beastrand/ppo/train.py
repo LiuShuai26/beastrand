@@ -6,9 +6,9 @@ import logging
 from typing import Optional
 
 import tyro
-from ppo.config import Args
-from core.common import setup_logging, set_start_method
-from nodes.manager import Manager
+from beastrand.ppo.config import Args
+from beastrand.core.common import setup_logging, set_start_method
+from beastrand.nodes.manager import Manager
 
 
 def main(argv: Optional[list[str]] = None) -> None:

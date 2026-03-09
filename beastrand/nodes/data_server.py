@@ -12,9 +12,9 @@ from __future__ import annotations
 
 import logging
 
-from nodes.common import child_logging_setup, child_sig_setup
-from nodes.logger import child_attach_logger
-from strandbus.strandbus import StrandBus
+from beastrand.nodes.common import child_logging_setup, child_sig_setup
+from beastrand.nodes.logger import child_attach_logger
+from beastrand.strandbus.strandbus import StrandBus
 
 
 class DataServer:

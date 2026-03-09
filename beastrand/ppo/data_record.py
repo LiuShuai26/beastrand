@@ -2,7 +2,7 @@
 from __future__ import annotations
 from typing import Dict, Tuple
 import numpy as np
-from core.base_record import DataRecordBase
+from beastrand.core.base_record import DataRecordBase
 
 class PPODataRecord(DataRecordBase):
     @staticmethod

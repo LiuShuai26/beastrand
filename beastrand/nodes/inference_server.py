@@ -20,11 +20,11 @@ from typing import Any, Dict, List, Optional
 import numpy as np
 import torch
 
-from nodes.common import child_logging_setup, child_sig_setup, ProfileAccum
-from nodes.logger import child_attach_logger, log_scalar
-from strandbus.strandbus import StrandBus
-from utils.import_utils import get_object_from_path
-from utils.model_sharing import ParameterClient
+from beastrand.nodes.common import child_logging_setup, child_sig_setup, ProfileAccum
+from beastrand.nodes.logger import child_attach_logger, log_scalar
+from beastrand.strandbus.strandbus import StrandBus
+from beastrand.utils.import_utils import get_object_from_path
+from beastrand.utils.model_sharing import ParameterClient
 
 # Message format: traj_idx (i), step (i), worker_idx (i), env_idx (i), op (i)
 REQ_FMT = "<iiiii"

@@ -3,14 +3,14 @@
 
 from dataclasses import dataclass, field
 
-from ppo.config import Args as PPOArgs
+from beastrand.ppo.config import Args as PPOArgs
 
 
 @dataclass
 class Args(PPOArgs):
 
-    policy_path: str = field(default="projects.atari.policy.AtariPolicy", init=False)
-    make_env_path: str = field(default="projects.atari.make_env.make_env", init=False)
+    policy_path: str = field(default="beastrand.projects.atari.policy.AtariPolicy", init=False)
+    make_env_path: str = field(default="beastrand.projects.atari.make_env.make_env", init=False)
 
     # ---- Atari-tuned defaults ----
     env_id: str = field(default="BreakoutNoFrameskip-v4", metadata={"help": "Atari env id"})

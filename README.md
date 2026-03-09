@@ -31,27 +31,27 @@ Existing frameworks force a choice: **simple but slow** (CleanRL, SB3) or **fast
 Requires Python 3.10+ and PyTorch 2.0+.
 
 ```bash
-pip install -r requirements.txt
+pip install -e .
 ```
 
 ## Usage
 
 ```bash
 # Standard PPO
-python -m ppo.train --env-id Humanoid-v5
+python -m beastrand.ppo.train --env-id Humanoid-v5
 
 # PPO-LSTM
-python -m projects.ppo_lstm.train --env-id Humanoid-v5
+python -m beastrand.projects.ppo_lstm.train --env-id Humanoid-v5
 
 # PPO-AMP (motion imitation with Beast .so environment)
-python -m projects.ppo_amp.train --env-id HumanoidEnv \
+python -m beastrand.projects.ppo_amp.train --env-id HumanoidEnv \
   --keyframe-file path/to/keyframes.json
 
 # MuJoCo preset (SF-tuned hyperparams)
-python -m projects.mujoco.train --env-id Humanoid-v4
+python -m beastrand.projects.mujoco.train --env-id Humanoid-v4
 
 # Atari (CNN policy, frame stacking)
-python -m projects.atari.train --env-id BreakoutNoFrameskip-v4
+python -m beastrand.projects.atari.train --env-id BreakoutNoFrameskip-v4
 
 # Monitoring
 tensorboard --logdir train_logs/

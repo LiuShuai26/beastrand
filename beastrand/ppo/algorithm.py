@@ -27,8 +27,8 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 
-from utils.checkpoint_utils import ActorForExport, ensure_single_onnx_file
-from utils.tensor_utils import to_torch  # noqa: F401  (re-exported for ppo_lstm)
+from beastrand.utils.checkpoint_utils import ActorForExport, ensure_single_onnx_file
+from beastrand.utils.tensor_utils import to_torch  # noqa: F401  (re-exported for ppo_lstm)
 
 
 class PPOAlgorithm:
@@ -40,7 +40,7 @@ class PPOAlgorithm:
 
         self.returns_rms = None
         if getattr(ctx.args, "normalize_returns", False):
-            from core.running_mean_std import RunningMeanStd
+            from beastrand.core.running_mean_std import RunningMeanStd
             self.returns_rms = RunningMeanStd()
 
         # LR schedule
@@ -217,7 +217,7 @@ def ppo_update(
     kl_coeff = getattr(ctx.args, "kl_loss_coeff", 0.0)
     has_action_logits = "action_logits" in data
     if has_action_logits:
-        from core.model.distributions import DiagGaussianDistribution
+        from beastrand.core.model.distributions import DiagGaussianDistribution
         b_action_logits = data["action_logits"].float()
 
     n_mb = N / ctx.args.minibatch_size

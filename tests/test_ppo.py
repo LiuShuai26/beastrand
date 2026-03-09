@@ -4,9 +4,9 @@ import numpy as np
 import pytest
 import torch
 
-from ppo.algorithm import compute_gae, normalize_advantages, ppo_update, PPOAlgorithm
-from core.running_mean_std import RunningMeanStd, RunningMeanStdTorch
-from utils.tensor_utils import to_torch
+from beastrand.ppo.algorithm import compute_gae, normalize_advantages, ppo_update, PPOAlgorithm
+from beastrand.core.running_mean_std import RunningMeanStd, RunningMeanStdTorch
+from beastrand.utils.tensor_utils import to_torch
 
 
 # ---------------------------------------------------------------------------
@@ -295,7 +295,7 @@ class TestPPOUpdate:
     @pytest.fixture()
     def setup(self):
         """Create a small policy, optimizer, and fake batch."""
-        from ppo.policy import PPOPolicy
+        from beastrand.ppo.policy import PPOPolicy
 
         class Cfg:
             obs_shape = (4,)
@@ -569,7 +569,7 @@ class TestKLLoss:
 
     @pytest.fixture()
     def setup(self):
-        from ppo.policy import PPOPolicy
+        from beastrand.ppo.policy import PPOPolicy
 
         class Cfg:
             obs_shape = (4,)
@@ -644,7 +644,7 @@ class TestLRSchedule:
 
     def _make_algo(self, lr_schedule="constant", total_steps=1000, batch_size=100,
                    learning_rate=1e-3):
-        from ppo.policy import PPOPolicy
+        from beastrand.ppo.policy import PPOPolicy
 
         class Cfg:
             obs_shape = (4,)

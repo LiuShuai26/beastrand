@@ -20,15 +20,15 @@ import numpy as np
 import torch
 import gymnasium as gym
 
-from core.buffer_mgr import BufferMgr
-from utils.import_utils import get_object_from_path
-from utils.model_sharing import ParameterServer
+from beastrand.core.buffer_mgr import BufferMgr
+from beastrand.utils.import_utils import get_object_from_path
+from beastrand.utils.model_sharing import ParameterServer
 
-from nodes.logger import start_logger, get_logger_queue
-from nodes.data_server import main as data_server_main
-from nodes.learner.learner import main as learner_main
-from nodes.rollout_worker import main as worker_main
-from nodes.inference_server import main as inference_server_main
+from beastrand.nodes.logger import start_logger, get_logger_queue
+from beastrand.nodes.data_server import main as data_server_main
+from beastrand.nodes.learner.learner import main as learner_main
+from beastrand.nodes.rollout_worker import main as worker_main
+from beastrand.nodes.inference_server import main as inference_server_main
 
 
 def _now_s() -> float:

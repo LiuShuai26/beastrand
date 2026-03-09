@@ -6,9 +6,9 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 
-from core.model.basic_model import MLP
-from core.model.distributions import DiagGaussianDistribution
-from core.base_policy import BasePolicy
+from beastrand.core.model.basic_model import MLP
+from beastrand.core.model.distributions import DiagGaussianDistribution
+from beastrand.core.base_policy import BasePolicy
 
 
 class PPOLSTMPolicy(BasePolicy):

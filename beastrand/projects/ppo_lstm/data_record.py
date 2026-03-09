@@ -4,7 +4,7 @@ from typing import Dict, Tuple
 
 import numpy as np
 
-from ppo.data_record import PPODataRecord
+from beastrand.ppo.data_record import PPODataRecord
 
 
 class PPOLSTMDataRecord(PPODataRecord):

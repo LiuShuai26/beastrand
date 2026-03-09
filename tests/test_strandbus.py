@@ -3,7 +3,7 @@ import multiprocessing as mp
 import os
 import time
 import zmq
-from strandbus.strandbus import StrandBus
+from beastrand.strandbus.strandbus import StrandBus
 
 _BASE = f"ipc:///tmp/beatstrand/test_{os.getpid()}"
 
