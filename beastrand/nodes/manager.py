@@ -181,20 +181,19 @@ class Manager:
         num_workers = self.args.num_workers
         num_envs_per_worker = self.args.num_envs_per_worker
         T = self.args.rollout
-        num_traj = 2 * num_workers * num_envs_per_worker
 
-        # 3. Create BufferMgr (shared tensors + queue + async ready flags)
+        # 3. Create BufferMgr (shared tensors + split flags)
         buffer_mgr = BufferMgr(
             cfg=self.ctx,  # passes through to DataRecord.alloc_specs
             obs_shape=self.ctx.obs_shape,
             act_shape=self.ctx.act_shape,
-            num_traj=num_traj,
             T=T,
             num_workers=num_workers,
             num_envs_per_worker=num_envs_per_worker,
+            split_depth=2,
         )
         self.ctx.buffer_mgr = buffer_mgr
-        logging.info("BufferMgr: %d trajectories, T=%d", num_traj, T)
+        logging.info("BufferMgr: %d trajectories (split_depth=2), T=%d", buffer_mgr.num_traj, T)
 
         # 4. Create ParameterServer (shared weights, always CPU)
         policy_cls = get_object_from_path(self.args.policy_path)

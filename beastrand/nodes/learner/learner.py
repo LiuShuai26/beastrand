@@ -4,7 +4,7 @@ Learner (v2): ingest thread + training loop.
 Changes from v1:
   - Reads trajectory data from BufferMgr shared tensors (zero-copy numpy views)
   - Uses ParameterServer for weight sync (no PUB/SUB, no ParamServer process)
-  - Recycles traj indices via BufferMgr.traj_buffer_queue (mp.Queue)
+  - Releases traj slots via split_flags[flat_idx, split_idx] = 0 (replaces mp.Queue)
   - Receives filled traj_idx as struct.pack("<i") from DataServer
 """
 from __future__ import annotations
@@ -81,8 +81,17 @@ def main(ctx, logger_queue) -> None:
     _batch_trigger = max(1, batch_size // T) if _use_batched_finalize else 1
     _max_policy_lag = getattr(args, "max_policy_lag", 0)
 
+    _split_depth = buffer_mgr.split_depth
+    _num_envs = buffer_mgr.num_envs_per_worker
+
+    def _release_slot(traj_idx: int) -> None:
+        """Release a trajectory slot back to its worker via split_flags."""
+        flat_idx = traj_idx // _split_depth
+        split_idx = traj_idx % _split_depth
+        buffer_mgr.split_flags[flat_idx, split_idx] = 0
+
     def _flush_pending(pending):
-        """Run batched finalize, append all views, recycle traj buffers."""
+        """Run batched finalize, append all views, release traj slots."""
         if not pending:
             return
 
@@ -95,7 +104,7 @@ def main(ctx, logger_queue) -> None:
             rdy = batch_buf.valid_steps >= learning_starts
 
         for ti, _ in pending:
-            buffer_mgr.traj_buffer_queue.put(ti)
+            _release_slot(ti)
 
         pending.clear()
 
@@ -146,7 +155,7 @@ def main(ctx, logger_queue) -> None:
 
                 # Discard stale trajectories (backpressure)
                 if _is_stale(view):
-                    buffer_mgr.traj_buffer_queue.put(traj_idx)
+                    _release_slot(traj_idx)
                     _discarded += 1
                     continue
 
@@ -163,13 +172,13 @@ def main(ctx, logger_queue) -> None:
                     if len(pending) >= _batch_trigger:
                         _flush_pending(pending)
                 else:
-                    # Plain PPO: append + recycle immediately
+                    # Plain PPO: append + release immediately
                     with buf_lock:
                         batch_buf.append_slot(view)
                         if batch_buf.valid_steps >= learning_starts:
                             notify_needed = True
 
-                    buffer_mgr.traj_buffer_queue.put(traj_idx)
+                    _release_slot(traj_idx)
 
             if notify_needed:
                 with have_batch:
@@ -294,8 +303,8 @@ def main(ctx, logger_queue) -> None:
                     pass
 
     finally:
-        # Wait for ingest thread to flush any pending traj buffers so that
-        # workers blocked on traj_queue.get() are unblocked before we exit.
+        # Wait for ingest thread to flush pending traj buffers and release
+        # split_flags so that workers spin-waiting on them can exit cleanly.
         ing_thread.join(timeout=5.0)
 
         # Save final checkpoint on exit (if algorithm supports it)

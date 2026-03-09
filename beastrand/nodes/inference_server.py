@@ -1,16 +1,18 @@
 """
-InferenceServer (v4): vectorized I/O via compact inference buffers.
+InferenceServer (v5): flat inference buffers, numpy 1D gather.
 
 Data flow:
-  1. Worker writes obs into infer_obs[worker_idx, env_idx] (compact, L2-resident)
-  2. Worker sends lightweight request: struct.pack("<iii", worker_idx, env_idx, op)  (12 bytes)
-  3. InferenceServer gathers obs via vectorized infer_obs[wi, ei] (no Python loop)
-  4. InferenceServer scatters action/logp/value into infer_act/logp/val[wi, ei] (vectorized)
-  5. InferenceServer sets ready_flags[worker_idx, env_idx] = 1
+  1. Worker writes obs into infer_obs[flat_idx] (flat [W*E, *shape], L2-resident)
+  2. Worker sends lightweight request: struct.pack("<ii", flat_idx, op)  (8 bytes)
+  3. InferenceServer gathers obs via numpy 1D indexing (int32 native, no astype)
+  4. InferenceServer scatters action/logp/value into infer_act/logp/val[flat_idx]
+  5. InferenceServer sets ready_flags[flat_idx] = 1
   6. Worker reads results from infer_* buffers and writes to traj_tensors for training
 
-No pickle on the hot path. Compact [W, E, *shape] inference buffers replace scattered
-[num_traj, T+1, *shape] traj_tensor access on the IS hot path.
+flat_idx = worker_idx * num_envs_per_worker + env_idx
+
+Numpy views are pre-cached in serve() so _gather_obs allocates nothing.
+int32 flat indexing eliminates astype(int64) and PyTorch 2D fancy indexing.
 """
 from __future__ import annotations
 
@@ -28,9 +30,9 @@ from beastrand.strandbus.strandbus import StrandBus
 from beastrand.utils.import_utils import get_object_from_path
 from beastrand.utils.model_sharing import ParameterClient
 
-# Message format: worker_idx (i), env_idx (i), op (i)  — 12 bytes
-REQ_FMT = "<iii"
-REQ_SIZE = struct.calcsize(REQ_FMT)
+# Message format: flat_idx (i), op (i)  — 8 bytes
+REQ_FMT = "<ii"
+REQ_SIZE = struct.calcsize(REQ_FMT)  # = 8
 
 OP_ACT = 0
 OP_VALUE = 1
@@ -52,16 +54,27 @@ class InferenceServer:
         self.traj_tensors: Dict[str, torch.Tensor] = {}
         self.ready_flags: Optional[torch.Tensor] = None
         self.param_client: Optional[ParameterClient] = None
-        # Compact live rnn_state buffers [num_workers, num_envs, hidden] (LSTM only).
+        # Compact live rnn_state buffers [W*E, hidden] flat (LSTM only).
         self.rnn_state_live_h: Optional[torch.Tensor] = None
         self.rnn_state_live_c: Optional[torch.Tensor] = None
-        # Compact inference I/O buffers [num_workers, num_envs, *shape].
+        # Compact inference I/O buffers [W*E, *shape] flat.
         self.infer_obs: Optional[torch.Tensor] = None
         self.infer_act: Optional[torch.Tensor] = None
         self.infer_logp: Optional[torch.Tensor] = None
         self.infer_val: Optional[torch.Tensor] = None
         self.infer_mask: Optional[torch.Tensor] = None
         self.infer_action_logits: Optional[torch.Tensor] = None
+
+        # Pre-cached numpy views (set by serve(), zero-copy into shared tensors)
+        self._obs_np: Optional[np.ndarray] = None
+        self._act_np: Optional[np.ndarray] = None
+        self._logp_np: Optional[np.ndarray] = None
+        self._val_np: Optional[np.ndarray] = None
+        self._mask_np: Optional[np.ndarray] = None
+        self._logits_np: Optional[np.ndarray] = None
+        self._flags_np: Optional[np.ndarray] = None
+        self._rnn_h_np: Optional[np.ndarray] = None
+        self._rnn_c_np: Optional[np.ndarray] = None
 
         # -- ZMQ (only for receiving requests, no reply sockets) --
         self.bus = StrandBus()
@@ -88,6 +101,20 @@ class InferenceServer:
         self.infer_mask = self.ctx.buffer_mgr.infer_mask
         self.infer_action_logits = self.ctx.buffer_mgr.infer_action_logits
         self.param_client = ParameterClient(self.ctx.param_server)
+
+        # Pre-cache numpy views (zero-copy) to avoid per-call allocation in _gather_obs
+        self._obs_np = self.infer_obs.numpy()
+        self._act_np = self.infer_act.numpy()
+        self._logp_np = self.infer_logp.numpy()
+        self._val_np = self.infer_val.numpy()
+        self._flags_np = self.ready_flags.numpy()
+        if self.use_lstm:
+            self._mask_np = self.infer_mask.numpy()
+            if self.rnn_state_live_h is not None:
+                self._rnn_h_np = self.rnn_state_live_h.numpy()
+                self._rnn_c_np = self.rnn_state_live_c.numpy()
+        if self.infer_action_logits is not None:
+            self._logits_np = self.infer_action_logits.numpy()
 
         # Initial weight load
         self.param_client.ensure_updated(self.policy)
@@ -132,13 +159,13 @@ class InferenceServer:
     # ------------------------------------------------------------------
 
     def _parse_requests_fast(self, raw_msgs: List[bytes]) -> np.ndarray:
-        """Parse raw ZMQ messages into Nx3 int32 array: [worker_idx, env_idx, op]."""
+        """Parse raw ZMQ messages into Nx2 int32 array: [flat_idx, op]."""
         buf = b"".join(raw_msgs)
         total_bytes = len(buf)
         if total_bytes == 0 or total_bytes % REQ_SIZE != 0:
-            return np.empty((0, 3), dtype=np.int32)
+            return np.empty((0, 2), dtype=np.int32)
         n = total_bytes // REQ_SIZE
-        return np.frombuffer(buf, dtype=np.int32).reshape(n, 3)
+        return np.frombuffer(buf, dtype=np.int32).reshape(n, 2)
 
     # ------------------------------------------------------------------
     # Batched inference
@@ -146,7 +173,7 @@ class InferenceServer:
 
     @torch.no_grad()
     def _process_batch(self, requests: np.ndarray) -> None:
-        ops = requests[:, 2]
+        ops = requests[:, 1]
         act_mask = ops == OP_ACT
         val_mask = ops == OP_VALUE
 
@@ -155,60 +182,51 @@ class InferenceServer:
         if val_mask.any():
             self._run_value(requests[val_mask])
 
-    def _gather_obs(
-        self,
-        worker_idxs: np.ndarray,
-        env_idxs: np.ndarray,
-    ):
-        """Vectorized gather from compact inference I/O buffers.
+    def _gather_obs(self, flat_idxs: np.ndarray) -> Dict[str, Any]:
+        """Gather obs from pre-cached numpy views using 1D int32 indexing.
 
-        obs: read from infer_obs[worker_idx, env_idx] — single vectorized index,
-          no Python loop, no random scatter into large traj_tensors.
-        rnn_state: read from rnn_state_live[worker_idx, env_idx] — L2-resident.
+        No astype conversion: flat_idxs is int32 from the ZMQ message, and
+        numpy fancy indexing accepts int32 natively. torch.from_numpy wraps
+        the result zero-copy (no extra allocation).
         """
-        wi = torch.from_numpy(worker_idxs.astype(np.int64))
-        ei = torch.from_numpy(env_idxs.astype(np.int64))
-
-        obs_batch = self.infer_obs[wi, ei]  # (N, *obs_shape), vectorized
+        obs_np = self._obs_np[flat_idxs]          # int32 fancy index, returns copy
+        obs_batch = torch.from_numpy(obs_np)       # zero-copy wrap
         if self.device.type != "cpu":
             obs_batch = obs_batch.to(self.device)
 
         inputs: Dict[str, Any] = {"obs": obs_batch}
 
         if self.use_lstm:
-            if self.rnn_state_live_h is not None:
-                h = self.rnn_state_live_h[wi, ei].unsqueeze(0)  # (1, N, hidden)
-                c = self.rnn_state_live_c[wi, ei].unsqueeze(0)
+            if self._rnn_h_np is not None:
+                h_np = self._rnn_h_np[flat_idxs]  # [N, hidden]
+                c_np = self._rnn_c_np[flat_idxs]
+                h = torch.from_numpy(h_np).unsqueeze(0)  # [1, N, hidden]
+                c = torch.from_numpy(c_np).unsqueeze(0)
             else:
-                h = torch.zeros(1, len(wi), self.policy.lstm_hidden_size)
+                h = torch.zeros(1, len(flat_idxs), self.policy.lstm_hidden_size)
                 c = torch.zeros_like(h)
             if self.device.type != "cpu":
                 h, c = h.to(self.device), c.to(self.device)
             inputs["rnn_state"] = (h, c)
-            # mask: read from infer_mask[wi, ei]
-            m = self.infer_mask[wi, ei]
+            m_np = self._mask_np[flat_idxs]
+            m = torch.from_numpy(m_np)
             if self.device.type != "cpu":
                 m = m.to(self.device)
             inputs["mask"] = m
 
-        return inputs, wi, ei
-
-    def _set_ready_flags(self, wi: torch.Tensor, ei: torch.Tensor) -> None:
-        """Vectorized ready flag setting."""
-        self.ready_flags[wi, ei] = 1
+        return inputs
 
     def _run_act(self, reqs: np.ndarray) -> None:
-        """Gather obs from infer_obs -> forward -> scatter to infer_act/logp/val -> set flags.
+        """Gather obs -> forward -> scatter to infer_* buffers -> set flags.
 
-        reqs: Nx3 int32 array [worker_idx, env_idx, op]
+        reqs: Nx2 int32 array [flat_idx, op]
         """
         t_start = time.monotonic()
 
-        worker_ids = reqs[:, 0]
-        env_idxs = reqs[:, 1]
+        flat_idxs = reqs[:, 0]  # int32, used directly for numpy indexing
 
-        # Vectorized gather from compact inference buffers (no Python loop)
-        inputs, wi, ei = self._gather_obs(worker_ids, env_idxs)
+        # Vectorized gather via pre-cached numpy views (no astype, no allocation)
+        inputs = self._gather_obs(flat_idxs)
         t_gather = time.monotonic()
         self.prof.add("gather_obs", t_gather - t_start)
 
@@ -217,38 +235,37 @@ class InferenceServer:
         t_fwd = time.monotonic()
         self.prof.add("forward", t_fwd - t_gather)
 
-        # --- Scatter results into compact infer_* buffers (vectorized) ---
+        # --- Scatter results via numpy (int32 native, no astype) ---
         actions = out["action"] if self.device.type == "cpu" else out["action"].cpu()
-        self.infer_act[wi, ei] = actions
+        self._act_np[flat_idxs] = actions.numpy()
 
         if "logp" in out:
             logps = out["logp"] if self.device.type == "cpu" else out["logp"].cpu()
-            self.infer_logp[wi, ei] = logps
+            self._logp_np[flat_idxs] = logps.numpy()
 
         if "value" in out:
             values = out["value"] if self.device.type == "cpu" else out["value"].cpu()
-            self.infer_val[wi, ei] = values
+            self._val_np[flat_idxs] = values.numpy()
 
-        if "action_logits" in out and self.infer_action_logits is not None:
+        if "action_logits" in out and self._logits_np is not None:
             al = out["action_logits"] if self.device.type == "cpu" else out["action_logits"].cpu()
-            self.infer_action_logits[wi, ei] = al
+            self._logits_np[flat_idxs] = al.numpy()
 
         if self.use_lstm and "rnn_state" in out:
             h_out, c_out = out["rnn_state"]
             if self.device.type != "cpu":
                 h_out, c_out = h_out.cpu(), c_out.cpu()
-            h_out = h_out.squeeze(0)  # (N, hidden)
+            h_out = h_out.squeeze(0)  # [N, hidden]
             c_out = c_out.squeeze(0)
-            # Write to compact live buffer (vectorized, for next inference gather).
-            if self.rnn_state_live_h is not None:
-                self.rnn_state_live_h[wi, ei] = h_out
-                self.rnn_state_live_c[wi, ei] = c_out
+            if self._rnn_h_np is not None:
+                self._rnn_h_np[flat_idxs] = h_out.numpy()
+                self._rnn_c_np[flat_idxs] = c_out.numpy()
 
         t_scatter = time.monotonic()
         self.prof.add("scatter", t_scatter - t_fwd)
 
-        # Set ready flags (vectorized)
-        self._set_ready_flags(wi, ei)
+        # Set ready flags (numpy int32 scatter)
+        self._flags_np[flat_idxs] = 1
 
         t_signal = time.monotonic()
         self.prof.add("set_flags", t_signal - t_scatter)
@@ -256,18 +273,16 @@ class InferenceServer:
     def _run_value(self, reqs: np.ndarray) -> None:
         """VALUE-only requests (bootstrap at trajectory boundary).
 
-        reqs: Nx3 int32 array [worker_idx, env_idx, op]
+        reqs: Nx2 int32 array [flat_idx, op]
         """
-        worker_ids = reqs[:, 0]
-        env_idxs = reqs[:, 1]
-
-        inputs, wi, ei = self._gather_obs(worker_ids, env_idxs)
+        flat_idxs = reqs[:, 0]
+        inputs = self._gather_obs(flat_idxs)
 
         v = self.policy.value(inputs)
         values = v if self.device.type == "cpu" else v.cpu()
-        self.infer_val[wi, ei] = values
+        self._val_np[flat_idxs] = values.numpy()
 
-        self._set_ready_flags(wi, ei)
+        self._flags_np[flat_idxs] = 1
 
 
 def main(ctx, logger_queue, server_idx: int = 0) -> None:
