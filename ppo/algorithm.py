@@ -19,7 +19,7 @@ Model API:
 
 from __future__ import annotations
 import logging
-import os
+import os  # used in save_checkpoint
 from typing import Dict, Any
 
 import numpy as np
@@ -189,6 +189,16 @@ def ppo_update(
 
     data = to_torch(batch, device)
 
+    # SF-style obs normalization: update running stats once with the full batch,
+    # then freeze the normalizer so all epochs/minibatches see consistent normalization.
+    # Without this, the normalizer updates stats on every minibatch forward pass,
+    # causing normalization drift within a single PPO update.
+    _obs_norm = getattr(policy, "obs_normalizer", None)
+    if _obs_norm is not None:
+        with torch.no_grad():
+            _obs_norm._update(data["obs"])
+        _obs_norm.eval()
+
     b_obs = data["obs"]
     b_actions = data["act"]
     b_logprobs = data["logp"].float()
@@ -210,18 +220,15 @@ def ppo_update(
         b_action_logits = data["action_logits"].float()
 
     n_mb = N / ctx.args.minibatch_size
-    b_inds = np.arange(b_obs.shape[0])
     for epoch in range(ctx.args.train_epochs):
-        np.random.shuffle(b_inds)
-        for start in range(0, b_obs.shape[0], ctx.args.minibatch_size):
+        for start in range(0, N, ctx.args.minibatch_size):
             end = start + ctx.args.minibatch_size
-            mb_inds = b_inds[start:end]
 
-            inputs = {"obs": b_obs[mb_inds], "action": b_actions[mb_inds]}
+            inputs = {"obs": b_obs[start:end], "action": b_actions[start:end]}
 
             eval_out = policy.evaluate_actions(inputs)
             newlogprob, entropy, newvalue = eval_out["logp"], eval_out["entropy"], eval_out["value"]
-            logratio = newlogprob - b_logprobs[mb_inds]
+            logratio = newlogprob - b_logprobs[start:end]
             ratio = torch.clamp(logratio.exp(), 0.05, 20.0)
 
             # Approximate KL for monitoring (always computed, cheap)
@@ -229,7 +236,7 @@ def ppo_update(
                 approx_kl = ((ratio - 1) - logratio).mean()
                 clipfracs.append(((ratio - 1.0).abs() > ctx.args.ppo_clip_range).float().mean().item())
 
-            mb_advantages = b_advantages[mb_inds]
+            mb_advantages = b_advantages[start:end]
             if ctx.args.normalize_adv:
                 mb_advantages = normalize_advantages(mb_advantages)
 
@@ -241,13 +248,13 @@ def ppo_update(
             pg_loss = torch.max(pg_loss1, pg_loss2).mean()
 
             newvalue = newvalue.view(-1)
-            v_loss_unclipped = (newvalue - b_returns[mb_inds]) ** 2
-            v_clipped = b_values[mb_inds] + torch.clamp(
-                newvalue - b_values[mb_inds],
+            v_loss_unclipped = (newvalue - b_returns[start:end]) ** 2
+            v_clipped = b_values[start:end] + torch.clamp(
+                newvalue - b_values[start:end],
                 -ctx.args.ppo_clip_value,
                 ctx.args.ppo_clip_value,
             )
-            v_loss_clipped = (v_clipped - b_returns[mb_inds]) ** 2
+            v_loss_clipped = (v_clipped - b_returns[start:end]) ** 2
             v_loss = torch.max(v_loss_unclipped, v_loss_clipped).mean()
 
             entropy_loss = entropy.mean()
@@ -258,7 +265,7 @@ def ppo_update(
                 if has_action_logits and "action_logits" in eval_out:
                     analytical_kl = DiagGaussianDistribution.kl_from_logits(
                         eval_out["action_logits"],        # new policy
-                        b_action_logits[mb_inds],         # old policy (from buffer)
+                        b_action_logits[start:end],       # old policy (from buffer)
                     ).mean()
                     loss = loss + kl_coeff * analytical_kl
                 else:
@@ -268,7 +275,7 @@ def ppo_update(
 
             optimizer.zero_grad()
             loss.backward()
-            nn.utils.clip_grad_norm_(policy.parameters(), ctx.args.max_grad_norm)
+            grad_norm_before = nn.utils.clip_grad_norm_(policy.parameters(), ctx.args.max_grad_norm)
             optimizer.step()
 
     return {
@@ -284,6 +291,7 @@ def ppo_update(
         "analytical_kl": analytical_kl.item() if has_action_logits else 0.0,
         "clip_frac": np.mean(clipfracs),
         "num_minibatches": float(n_mb),
+        "grad_norm": grad_norm_before.item() if hasattr(grad_norm_before, 'item') else float(grad_norm_before),
     }
 
 
