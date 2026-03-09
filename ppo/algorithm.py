@@ -196,7 +196,8 @@ def ppo_update(
     _obs_norm = getattr(policy, "obs_normalizer", None)
     if _obs_norm is not None:
         with torch.no_grad():
-            _obs_norm._update(data["obs"])
+            obs_flat = data["obs"].reshape(data["obs"].shape[0], -1)
+            _obs_norm._update(obs_flat)
         _obs_norm.eval()
 
     b_obs = data["obs"]
