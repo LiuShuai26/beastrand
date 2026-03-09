@@ -16,16 +16,16 @@ beastrand is a distributed PPO training framework for physics-based game AI. It 
 python -m beastrand.ppo.train --env-id Humanoid-v5
 
 # MuJoCo project (SF-matched hyperparams)
-python -m beastrand.projects.mujoco.train --env-id HalfCheetah-v4
+python -m projects.mujoco.train --env-id HalfCheetah-v4
 
 # Atari project (SF-matched hyperparams, NatureCNN)
-python -m beastrand.projects.atari.train --env-id BreakoutNoFrameskip-v4
+python -m projects.atari.train --env-id BreakoutNoFrameskip-v4
 
 # PPO-LSTM
-python -m beastrand.projects.ppo_lstm.train --env-id Humanoid-v5
+python -m projects.ppo_lstm.train --env-id Humanoid-v5
 
 # PPO-AMP with Beast .so environment
-python -m beastrand.projects.ppo_amp.train --env-id HumanoidEnv --keyframe-file path/to/keyframes.json
+python -m projects.ppo_amp.train --env-id HumanoidEnv --keyframe-file path/to/keyframes.json
 ```
 
 CLI parsing uses `tyro` — all fields in the `Args` dataclass become CLI flags (use `--help` for full list).

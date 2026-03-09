@@ -6,7 +6,7 @@ import logging
 from typing import Optional
 
 import tyro
-from beastrand.projects.ppo_amp.config import Args
+from projects.ppo_amp.config import Args
 from beastrand.core.common import setup_logging, set_start_method
 from beastrand.nodes.manager import Manager
 

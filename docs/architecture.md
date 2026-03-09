@@ -42,18 +42,18 @@ traj_tensors["value"]   →  [num_traj, T+1]              float32
 ...
 ```
 
-`num_traj = num_workers × num_envs_per_worker`. Each env occupies one slot at a time.
+`num_traj = num_workers × num_envs_per_worker × split_depth` (split_depth=2).
 
-**Slot allocation** uses a token pool (`mp.Queue`):
+**Slot assignment** is deterministic:
 
 ```
-Worker gets slot_idx from queue      → "I'll write to slot 3"
-Worker fills T steps of data
-Worker sends slot_idx to Learner     → "Slot 3 is ready for training"
-Learner trains on slot 3, returns it → queue.put(3)
+flat_idx = worker_idx * num_envs_per_worker + env_idx
+traj_idx = flat_idx * split_depth + split_idx   (split_idx cycles 0→1→0→...)
 ```
 
-No locks needed — at any moment, only one process holds a given slot_idx.
+Workers cycle `split_idx` each trajectory. The Learner releases the slot via `split_flags[flat_idx, split_idx] = 0`; the worker spin-waits on this flag before reusing the slot (backpressure, replaces `mp.Queue`). No IPC on the hot path.
+
+**Inference I/O buffers** are separate flat `[W*E, *shape]` shared tensors (`infer_obs`, `infer_act`, `infer_logp`, `infer_val`). Workers write current obs here before the ZMQ request; IS reads/writes these compact buffers instead of the large trajectory tensors. See [inference-hotpath-optimization.md](design/inference-hotpath-optimization.md) for the full optimization history.
 
 **Tensor layout** is defined by DataRecord (pluggable per algorithm). BufferMgr calls `DataRecord.alloc_specs()` to learn what fields to allocate. This way BufferMgr doesn't know about algorithm-specific fields (e.g., PPO-AMP's `amp_transition`).
 
@@ -72,9 +72,9 @@ Uses a single `mp.Lock` to prevent weight tearing. Lock contention is minimal be
 
 ### ready_flags
 
-`torch.zeros(num_workers, num_envs_per_worker, dtype=int32).share_memory_()`
+`torch.zeros(num_workers * num_envs_per_worker, dtype=int32).share_memory_()`
 
-InferenceServer writes `1` after scattering action into shared tensors. Workers poll their flag and reset to `0` after reading. Faster than ZMQ reply — action data is already in shared memory, only a 1-bit signal is needed.
+Flat `[W*E]` layout indexed by `flat_idx = worker_idx * E + env_idx`. InferenceServer writes `1` after scattering results into infer_* buffers. Workers poll and reset to `0` after reading. Faster than ZMQ reply — result data is already in shared memory, only a 1-bit signal is needed.
 
 ## Data Flow
 
@@ -83,22 +83,24 @@ InferenceServer writes `1` after scattering action into shared tensors. Workers 
 ```
 Worker                    InferenceServer              Shared Memory
   │                            │                           │
-  ├─ write obs[ti,s] ──────────────────────────────────► obs tensor
-  ├─ send 20B struct ────────►│                           │
-  │  (ti, step, wi, ei, op)   │                           │
-  │                            ├─ gather obs ◄──────── obs tensor
+  ├─ write obs[ti,s] ──────────────────────────────────► traj_tensors["obs"]
+  ├─ write infer_obs[flat_idx] ────────────────────────► infer_obs [W*E, obs_dim]
+  ├─ send 8B struct ─────────►│                           │
+  │  (flat_idx, op)            │                           │
+  │                            ├─ gather obs ◄──────── infer_obs (numpy 1D)
   │                            ├─ GPU forward (batched)    │
-  │                            ├─ scatter action ────────► action tensor
-  │                            ├─ scatter logp ──────────► logp tensor
-  │                            ├─ scatter value ─────────► value tensor
-  │                            ├─ set flag ──────────────► ready_flags
-  ├─ poll flag ◄───────────────────────────────────────── ready_flags
-  ├─ read action ◄─────────────────────────────────────── action tensor
+  │                            ├─ scatter action ────────► infer_act [W*E, act_dim]
+  │                            ├─ scatter logp ──────────► infer_logp [W*E]
+  │                            ├─ scatter value ─────────► infer_val [W*E]
+  │                            ├─ set flag ──────────────► ready_flags [W*E]
+  ├─ poll flag ◄───────────────────────────────────────── ready_flags[flat_idx]
+  ├─ read action ◄─────────────────────────────────────── infer_act[flat_idx]
+  ├─ write action/logp/val to traj_tensors ────────────► traj_tensors["action"]...
   ├─ env.step(action)          │                           │
-  └─ write reward, done ───────────────────────────────► reward, done tensors
+  └─ write reward, done ───────────────────────────────► traj_tensors["reward"]...
 ```
 
-**Zero pickle, zero serialization.** ZMQ only carries 20-byte index messages.
+**Zero pickle, zero serialization.** ZMQ only carries 8-byte `(flat_idx, op)` messages.
 
 ### Trajectory Completion Path
 
@@ -108,7 +110,7 @@ Worker ──4B traj_idx──► DataServer ──forward──► Learner (ing
                                                   ├─ slot_as_numpy(ti)    zero-copy view
                                                   ├─ prepare_batch()      GAE computation
                                                   ├─ append to BatchBuffer (copy)
-                                                  ├─ recycle: queue.put(ti)
+                                                  ├─ release: split_flags[flat,split]=0
                                                   │
                                                   ▼
                                                 Learner (main thread)
@@ -144,9 +146,11 @@ for es in self.envs:
 
 This is event-driven, not round-robin. Whichever env's inference result arrives first gets stepped first. CPU is never idle waiting for a single env.
 
-**Why not double buffering?** With async per-env polling, CPU/GPU pipelining happens naturally at the finest granularity (each env independently). Double buffering (grouping envs into splits) would introduce unnecessary intra-group synchronization. Benchmarks confirmed no throughput gain (see [docs/design/remove-worker-splits.md](design/remove-worker-splits.md)).
+**Trajectory-level double buffering (`split_depth=2`)**: Each (worker, env) pair owns 2 trajectory slots, cycling between them. While the Learner processes slot 0, the Worker fills slot 1 — pure producer-consumer overlap with no synchronization except the spin-wait at trajectory boundaries. This is not step-level double buffering.
 
-**Note**: Double buffering IS useful when `env.step()` runs on GPU (e.g., Isaac Gym), where step and inference compete for the same hardware and need CUDA stream-level overlap. beastrand's CPU envs don't have this problem.
+**Why not step-level double buffering?** Step-level double buffering groups envs into two alternating batches to pipeline inference and env.step. With async per-env polling, CPU/GPU pipelining happens naturally at the finest granularity (each env independently), so adding batch-level grouping would introduce unnecessary intra-group synchronization with no throughput gain.
+
+**Note**: Step-level double buffering IS useful when `env.step()` runs on GPU (e.g., Isaac Gym), where step and inference compete for the same hardware and need CUDA stream-level overlap. beastrand's CPU envs don't have this problem.
 
 ## Learner: Dual-Thread Design
 
@@ -160,7 +164,7 @@ This is event-driven, not round-robin. Whichever env's inference result arrives 
 │  zero-copy numpy view       build_batch()    │
 │  prepare_batch (GAE)  ───►  PPO update (GPU) │
 │  append BatchBuffer  notify param_server     │
-│  recycle slot_idx           checkpoint       │
+│  release split_flags        checkpoint       │
 └──────────────────────────────────────────────┘
 ```
 
@@ -181,7 +185,7 @@ After forward returns:
 
 Higher load → more requests queue up → bigger batches → better GPU utilization. Positive feedback loop.
 
-**Request parsing**: All messages are concatenated into one `bytes` buffer, then `np.frombuffer(...).reshape(N, 5)` parses them in one operation. No per-message `struct.unpack`.
+**Request parsing**: All messages are concatenated into one `bytes` buffer, then `np.frombuffer(...).reshape(N, 2)` parses them in one operation (Nx2 int32: `[flat_idx, op]`). No per-message `struct.unpack`. Numpy pre-cached views eliminate `astype(int64)` and `torch.from_numpy` overhead on the gather path.
 
 ## Module System
 
@@ -235,7 +239,7 @@ log_scalar(run="learner", tag="pi_loss", value=0.05, step=100)
 | Core code | ~300 LOC/algo | ~50K LOC | ~30K LOC | ~200K+ LOC | ~2K LOC |
 | Process model | Single | SubprocVecEnv | Multi-process async | Ray actors | Multi-process async |
 | Data transfer | In-memory | Pickle over pipe | Shared memory | Ray object store | Shared memory + ZMQ |
-| GPU utilization | ~10% | ~20-30% | ~60-80% | ~40-60% | ~60-70% |
+| GPU utilization | ~10% | ~20-30% | ~60-80% | ~40-60% | ~65-75% |
 | Multi-machine | No | No | No | Yes (Ray) | No (tcp:// ready) |
 | Algorithms | Many | 6+ | PPO/APPO | 30+ | PPO family |
 | AMP support | No | No | No | No | Native |
@@ -248,33 +252,36 @@ beastrand and Sample Factory (default config, without V-trace) implement the sam
 beastrand has three layers of code with a strict dependency direction: `projects → ppo → core/nodes`.
 
 ```
-beastrand/
-├── nodes/                     Infrastructure: process topology, communication
-├── strandbus/                 Infrastructure: ZMQ IPC wrapper
-├── utils/                     Infrastructure: param server, import, tensor utils
-├── core/                      Interfaces + reusable building blocks
-│   ├── base_policy.py           Policy interface (act, value, evaluate_actions)
-│   ├── base_record.py           DataRecord interface (alloc_specs, build_batch)
-│   ├── model/                   MLP, distributions
-│   └── envs/make_env.py         Standard Gymnasium factory
+beastrand-repo/                    ← git repo root
+├── beastrand/                     ← pip package (pip install -e .)
+│   ├── nodes/                       Infrastructure: process topology, communication
+│   ├── strandbus/                   Infrastructure: ZMQ IPC wrapper
+│   ├── utils/                       Infrastructure: param server, import, tensor utils
+│   ├── core/                        Interfaces + reusable building blocks
+│   │   ├── base_policy.py             Policy interface (act, value, evaluate_actions)
+│   │   ├── base_record.py             DataRecord interface (alloc_specs, build_batch)
+│   │   ├── model/                     MLP, distributions
+│   │   └── envs/make_env.py           Standard Gymnasium factory
+│   │
+│   └── ppo/                         Standard equipment — the default algorithm
+│       ├── policy.py                  Actor-critic with shared MLP body
+│       ├── algorithm.py               GAE + PPO clipped update
+│       ├── data_record.py             Trajectory tensor layout
+│       ├── config.py                  Hyperparameters (tyro CLI)
+│       └── train.py                   Entry point
 │
-├── ppo/                       Standard equipment — the default algorithm
-│   ├── policy.py                Actor-critic with shared MLP body
-│   ├── algorithm.py             GAE + PPO clipped update
-│   ├── data_record.py           Trajectory tensor layout
-│   ├── config.py                Hyperparameters (tyro CLI)
-│   └── train.py                 Entry point
-│
-├── projects/                  Extensions built on top of PPO
-│   ├── ppo_lstm/                PPO + recurrent policy (truncated BPTT)
-│   └── ppo_amp/                 PPO + adversarial motion priors
+└── projects/                      ← NOT part of the package (like sf_examples/)
+    ├── mujoco/                      MuJoCo presets (SF-matched hyperparams)
+    ├── atari/                       Atari presets (NatureCNN, ClipRewardEnv)
+    ├── ppo_lstm/                    PPO + recurrent policy (truncated BPTT)
+    └── ppo_amp/                     PPO + adversarial motion priors
 ```
 
 **Infrastructure** (nodes, strandbus, utils) is algorithm-agnostic — it handles process spawning, ZMQ messaging, shared-memory tensors, weight sync, and batched GPU inference. None of this code knows about PPO.
 
-**PPO** is the framework's default algorithm. It lives in its own directory (not in `projects/`) because all current extensions build on it — PPO-LSTM and PPO-AMP both import `compute_gae` and inherit `PPODataRecord`.
+**PPO** is the framework's default algorithm. It lives inside the package because all current extensions build on it — PPO-LSTM and PPO-AMP both import `compute_gae` and inherit `PPODataRecord`.
 
-**Projects** are algorithm extensions or application-specific code. They depend on `ppo/` and `core/`, never the other way around.
+**Projects** live at the repo root (not inside the pip package), mirroring Sample Factory's `sf_examples/` layout. They are runnable from the repo root via `python -m projects.mujoco.train`. They depend on `beastrand.ppo` and `beastrand.core`, never the other way around.
 
 ## Adding New Algorithms
 

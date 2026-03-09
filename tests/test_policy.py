@@ -2,8 +2,8 @@ import torch
 import pytest
 
 from beastrand.ppo.policy import PPOPolicy
-from beastrand.projects.ppo_lstm.policy import PPOLSTMPolicy
-from beastrand.projects.ppo_lstm.data_record import PPOLSTMDataRecord
+from projects.ppo_lstm.policy import PPOLSTMPolicy
+from projects.ppo_lstm.data_record import PPOLSTMDataRecord
 
 
 class DummyCfg:

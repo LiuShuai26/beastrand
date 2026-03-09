@@ -1,9 +1,9 @@
-"""Atari PPO training entrypoint.
+"""MuJoCo PPO training entrypoint.
 
 Usage:
-    python -m projects.atari.train
-    python -m projects.atari.train --env-id PongNoFrameskip-v4
-    python -m projects.atari.train --env-id SpaceInvadersNoFrameskip-v4 --seed 42
+    python -m projects.mujoco.train
+    python -m projects.mujoco.train --env-id Humanoid-v4
+    python -m projects.mujoco.train --env-id Ant-v4 --seed 42
 """
 
 from __future__ import annotations
@@ -12,7 +12,7 @@ import logging
 from typing import Optional
 
 import tyro
-from beastrand.projects.atari.config import Args
+from projects.mujoco.config import Args
 from beastrand.core.common import setup_logging, set_start_method
 from beastrand.nodes.manager import Manager
 
@@ -26,7 +26,7 @@ def main(argv: Optional[list[str]] = None) -> None:
     run_name = args.make_run_name()
     setup_logging(args.logdir, run_name)
 
-    logging.info("Atari PPO Args: %s", args)
+    logging.info("MuJoCo PPO Args: %s", args)
 
     mgr = Manager(args)
     mgr.launch()

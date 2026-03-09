@@ -41,17 +41,17 @@ pip install -e .
 python -m beastrand.ppo.train --env-id Humanoid-v5
 
 # PPO-LSTM
-python -m beastrand.projects.ppo_lstm.train --env-id Humanoid-v5
+python -m projects.ppo_lstm.train --env-id Humanoid-v5
 
 # PPO-AMP (motion imitation with Beast .so environment)
-python -m beastrand.projects.ppo_amp.train --env-id HumanoidEnv \
+python -m projects.ppo_amp.train --env-id HumanoidEnv \
   --keyframe-file path/to/keyframes.json
 
 # MuJoCo preset (SF-tuned hyperparams)
-python -m beastrand.projects.mujoco.train --env-id Humanoid-v4
+python -m projects.mujoco.train --env-id Humanoid-v4
 
 # Atari (CNN policy, frame stacking)
-python -m beastrand.projects.atari.train --env-id BreakoutNoFrameskip-v4
+python -m projects.atari.train --env-id BreakoutNoFrameskip-v4
 
 # Monitoring
 tensorboard --logdir train_logs/

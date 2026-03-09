@@ -23,9 +23,9 @@ import torch.nn as nn
 import torch.optim as optim
 
 from beastrand.ppo.algorithm import normalize_advantages
-from beastrand.projects.ppo_amp.discriminator import AMPDiscriminator
-from beastrand.projects.ppo_amp.motion_buffer import AMPMotionBuffer
-from beastrand.projects.ppo_amp.rewards import compute_disc_loss, compute_style_reward
+from projects.ppo_amp.discriminator import AMPDiscriminator
+from projects.ppo_amp.motion_buffer import AMPMotionBuffer
+from projects.ppo_amp.rewards import compute_disc_loss, compute_style_reward
 from beastrand.utils.checkpoint_utils import ActorForExport, ensure_single_onnx_file
 from beastrand.utils.tensor_utils import to_torch
 

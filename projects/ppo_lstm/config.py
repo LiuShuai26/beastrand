@@ -3,15 +3,15 @@
 
 from dataclasses import dataclass, field
 
-from beastrand.ppo.config import Args as PPOArgs
+from projects.mujoco.config import Args as MuJoCoArgs
 
 
 @dataclass
-class Args(PPOArgs):
+class Args(MuJoCoArgs):
 
-    data_record_path: str = field(default="beastrand.projects.ppo_lstm.data_record.PPOLSTMDataRecord", init=False)
-    policy_path: str = field(default="beastrand.projects.ppo_lstm.policy.PPOLSTMPolicy", init=False)
-    algorithm_path: str = field(default="beastrand.projects.ppo_lstm.algorithm.PPOLSTMAlgorithm", init=False)
+    data_record_path: str = field(default="projects.ppo_lstm.data_record.PPOLSTMDataRecord", init=False)
+    policy_path: str = field(default="projects.ppo_lstm.policy.PPOLSTMPolicy", init=False)
+    algorithm_path: str = field(default="projects.ppo_lstm.algorithm.PPOLSTMAlgorithm", init=False)
 
     # LSTM-specific
     lstm_hidden_size: int = field(default=128, metadata={"help": "Hidden size for LSTM"})
