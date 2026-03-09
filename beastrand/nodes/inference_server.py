@@ -1,14 +1,16 @@
 """
-InferenceServer (v3): zero-copy batched GPU inference with async signaling.
+InferenceServer (v4): vectorized I/O via compact inference buffers.
 
 Data flow:
-  1. Worker writes obs (+ rnn states) into traj_tensors[traj_idx, step]
-  2. Worker sends lightweight request: struct.pack("<iiiii", traj_idx, step, worker_idx, env_idx, op)
-  3. InferenceServer gathers obs from shared tensors, runs forward pass
-  4. InferenceServer scatters action/logp/value back into shared tensors
-  5. InferenceServer sets ready_flags[worker_idx, env_idx] = 1 (shared memory, no ZMQ reply)
+  1. Worker writes obs into infer_obs[worker_idx, env_idx] (compact, L2-resident)
+  2. Worker sends lightweight request: struct.pack("<iii", worker_idx, env_idx, op)  (12 bytes)
+  3. InferenceServer gathers obs via vectorized infer_obs[wi, ei] (no Python loop)
+  4. InferenceServer scatters action/logp/value into infer_act/logp/val[wi, ei] (vectorized)
+  5. InferenceServer sets ready_flags[worker_idx, env_idx] = 1
+  6. Worker reads results from infer_* buffers and writes to traj_tensors for training
 
-No pickle on the hot path. All observation and action data stays in shared memory.
+No pickle on the hot path. Compact [W, E, *shape] inference buffers replace scattered
+[num_traj, T+1, *shape] traj_tensor access on the IS hot path.
 """
 from __future__ import annotations
 
@@ -26,8 +28,8 @@ from beastrand.strandbus.strandbus import StrandBus
 from beastrand.utils.import_utils import get_object_from_path
 from beastrand.utils.model_sharing import ParameterClient
 
-# Message format: traj_idx (i), step (i), worker_idx (i), env_idx (i), op (i)
-REQ_FMT = "<iiiii"
+# Message format: worker_idx (i), env_idx (i), op (i)  — 12 bytes
+REQ_FMT = "<iii"
 REQ_SIZE = struct.calcsize(REQ_FMT)
 
 OP_ACT = 0
@@ -51,9 +53,15 @@ class InferenceServer:
         self.ready_flags: Optional[torch.Tensor] = None
         self.param_client: Optional[ParameterClient] = None
         # Compact live rnn_state buffers [num_workers, num_envs, hidden] (LSTM only).
-        # Fits in L2 cache; avoids random access into large traj_tensors["rnn_state_h"].
         self.rnn_state_live_h: Optional[torch.Tensor] = None
         self.rnn_state_live_c: Optional[torch.Tensor] = None
+        # Compact inference I/O buffers [num_workers, num_envs, *shape].
+        self.infer_obs: Optional[torch.Tensor] = None
+        self.infer_act: Optional[torch.Tensor] = None
+        self.infer_logp: Optional[torch.Tensor] = None
+        self.infer_val: Optional[torch.Tensor] = None
+        self.infer_mask: Optional[torch.Tensor] = None
+        self.infer_action_logits: Optional[torch.Tensor] = None
 
         # -- ZMQ (only for receiving requests, no reply sockets) --
         self.bus = StrandBus()
@@ -73,6 +81,12 @@ class InferenceServer:
         self.ready_flags = self.ctx.buffer_mgr.ready_flags
         self.rnn_state_live_h = self.ctx.buffer_mgr.rnn_state_live_h
         self.rnn_state_live_c = self.ctx.buffer_mgr.rnn_state_live_c
+        self.infer_obs = self.ctx.buffer_mgr.infer_obs
+        self.infer_act = self.ctx.buffer_mgr.infer_act
+        self.infer_logp = self.ctx.buffer_mgr.infer_logp
+        self.infer_val = self.ctx.buffer_mgr.infer_val
+        self.infer_mask = self.ctx.buffer_mgr.infer_mask
+        self.infer_action_logits = self.ctx.buffer_mgr.infer_action_logits
         self.param_client = ParameterClient(self.ctx.param_server)
 
         # Initial weight load
@@ -118,15 +132,13 @@ class InferenceServer:
     # ------------------------------------------------------------------
 
     def _parse_requests_fast(self, raw_msgs: List[bytes]) -> np.ndarray:
-        """Parse raw ZMQ messages into Nx5 int32 array:
-        [traj_idx, step, worker_idx, env_idx, op].
-        """
+        """Parse raw ZMQ messages into Nx3 int32 array: [worker_idx, env_idx, op]."""
         buf = b"".join(raw_msgs)
         total_bytes = len(buf)
         if total_bytes == 0 or total_bytes % REQ_SIZE != 0:
-            return np.empty((0, 5), dtype=np.int32)
+            return np.empty((0, 3), dtype=np.int32)
         n = total_bytes // REQ_SIZE
-        return np.frombuffer(buf, dtype=np.int32).reshape(n, 5)
+        return np.frombuffer(buf, dtype=np.int32).reshape(n, 3)
 
     # ------------------------------------------------------------------
     # Batched inference
@@ -134,7 +146,7 @@ class InferenceServer:
 
     @torch.no_grad()
     def _process_batch(self, requests: np.ndarray) -> None:
-        ops = requests[:, 4]
+        ops = requests[:, 2]
         act_mask = ops == OP_ACT
         val_mask = ops == OP_VALUE
 
@@ -145,78 +157,58 @@ class InferenceServer:
 
     def _gather_obs(
         self,
-        traj_idxs: np.ndarray,
-        steps: np.ndarray,
         worker_idxs: np.ndarray,
         env_idxs: np.ndarray,
-    ) -> Dict[str, Any]:
-        """Gather obs (+ LSTM states) from shared tensors.
+    ):
+        """Vectorized gather from compact inference I/O buffers.
 
-        obs: read from traj_tensors[traj_idx, step] via scalar indexing + stack.
-        rnn_state: read from rnn_state_live[worker_idx, env_idx] — compact
-          [num_workers, num_envs, hidden] buffer that fits in L2 cache, avoiding
-          random access into the large traj_tensors["rnn_state_h"] [num_traj, T+1, hidden].
+        obs: read from infer_obs[worker_idx, env_idx] — single vectorized index,
+          no Python loop, no random scatter into large traj_tensors.
+        rnn_state: read from rnn_state_live[worker_idx, env_idx] — L2-resident.
         """
-        obs_t = self.traj_tensors["obs"]
-        obs_batch = torch.stack(
-            [obs_t[ti, s] for ti, s in zip(traj_idxs, steps)], dim=0
-        )
+        wi = torch.from_numpy(worker_idxs.astype(np.int64))
+        ei = torch.from_numpy(env_idxs.astype(np.int64))
+
+        obs_batch = self.infer_obs[wi, ei]  # (N, *obs_shape), vectorized
         if self.device.type != "cpu":
             obs_batch = obs_batch.to(self.device)
 
         inputs: Dict[str, Any] = {"obs": obs_batch}
 
         if self.use_lstm:
-            wi = torch.from_numpy(worker_idxs.astype(np.int64))
-            ei = torch.from_numpy(env_idxs.astype(np.int64))
             if self.rnn_state_live_h is not None:
-                # Fast path: vectorized read from compact live buffer (L2-resident).
                 h = self.rnn_state_live_h[wi, ei].unsqueeze(0)  # (1, N, hidden)
                 c = self.rnn_state_live_c[wi, ei].unsqueeze(0)
             else:
-                # Fallback: legacy scattered read from large traj_tensors.
-                h_t = self.traj_tensors["rnn_state_h"]
-                c_t = self.traj_tensors["rnn_state_c"]
-                h = torch.stack(
-                    [h_t[ti, s] for ti, s in zip(traj_idxs, steps)], dim=0
-                ).unsqueeze(0)
-                c = torch.stack(
-                    [c_t[ti, s] for ti, s in zip(traj_idxs, steps)], dim=0
-                ).unsqueeze(0)
+                h = torch.zeros(1, len(wi), self.policy.lstm_hidden_size)
+                c = torch.zeros_like(h)
             if self.device.type != "cpu":
                 h, c = h.to(self.device), c.to(self.device)
             inputs["rnn_state"] = (h, c)
-            if "mask" in self.traj_tensors:
-                m_t = self.traj_tensors["mask"]
-                m = torch.stack(
-                    [m_t[ti, s] for ti, s in zip(traj_idxs, steps)], dim=0
-                )
-                if self.device.type != "cpu":
-                    m = m.to(self.device)
-                inputs["mask"] = m
+            # mask: read from infer_mask[wi, ei]
+            m = self.infer_mask[wi, ei]
+            if self.device.type != "cpu":
+                m = m.to(self.device)
+            inputs["mask"] = m
 
-        return inputs
+        return inputs, wi, ei
 
-    def _set_ready_flags(self, worker_ids: np.ndarray, env_idxs: np.ndarray) -> None:
+    def _set_ready_flags(self, wi: torch.Tensor, ei: torch.Tensor) -> None:
         """Vectorized ready flag setting."""
-        wi_t = torch.from_numpy(worker_ids.astype(np.int64))
-        ei_t = torch.from_numpy(env_idxs.astype(np.int64))
-        self.ready_flags[wi_t, ei_t] = 1
+        self.ready_flags[wi, ei] = 1
 
     def _run_act(self, reqs: np.ndarray) -> None:
-        """Gather obs -> forward -> scatter action/logp/value -> set ready flags.
+        """Gather obs from infer_obs -> forward -> scatter to infer_act/logp/val -> set flags.
 
-        reqs: Nx5 int32 array [traj_idx, step, worker_idx, env_idx, op]
+        reqs: Nx3 int32 array [worker_idx, env_idx, op]
         """
         t_start = time.monotonic()
 
-        traj_idxs = reqs[:, 0]
-        steps = reqs[:, 1]
-        worker_ids = reqs[:, 2]
-        env_idxs = reqs[:, 3]
+        worker_ids = reqs[:, 0]
+        env_idxs = reqs[:, 1]
 
-        # Gather obs (scalar indexing + stack, fast for small batches on shared memory)
-        inputs = self._gather_obs(traj_idxs, steps, worker_ids, env_idxs)
+        # Vectorized gather from compact inference buffers (no Python loop)
+        inputs, wi, ei = self._gather_obs(worker_ids, env_idxs)
         t_gather = time.monotonic()
         self.prof.add("gather_obs", t_gather - t_start)
 
@@ -225,24 +217,21 @@ class InferenceServer:
         t_fwd = time.monotonic()
         self.prof.add("forward", t_fwd - t_gather)
 
-        # --- Scatter results back: advanced indexing (write path, less overhead) ---
-        ti_t = torch.from_numpy(traj_idxs.astype(np.int64))
-        s_t = torch.from_numpy(steps.astype(np.int64))
-
+        # --- Scatter results into compact infer_* buffers (vectorized) ---
         actions = out["action"] if self.device.type == "cpu" else out["action"].cpu()
-        self.traj_tensors["action"][ti_t, s_t] = actions
+        self.infer_act[wi, ei] = actions
 
         if "logp" in out:
             logps = out["logp"] if self.device.type == "cpu" else out["logp"].cpu()
-            self.traj_tensors["log_prob"][ti_t, s_t] = logps
+            self.infer_logp[wi, ei] = logps
 
         if "value" in out:
             values = out["value"] if self.device.type == "cpu" else out["value"].cpu()
-            self.traj_tensors["value"][ti_t, s_t] = values
+            self.infer_val[wi, ei] = values
 
-        if "action_logits" in out and "action_logits" in self.traj_tensors:
+        if "action_logits" in out and self.infer_action_logits is not None:
             al = out["action_logits"] if self.device.type == "cpu" else out["action_logits"].cpu()
-            self.traj_tensors["action_logits"][ti_t, s_t] = al
+            self.infer_action_logits[wi, ei] = al
 
         if self.use_lstm and "rnn_state" in out:
             h_out, c_out = out["rnn_state"]
@@ -250,36 +239,16 @@ class InferenceServer:
                 h_out, c_out = h_out.cpu(), c_out.cpu()
             h_out = h_out.squeeze(0)  # (N, hidden)
             c_out = c_out.squeeze(0)
-            wi_t = torch.from_numpy(worker_ids.astype(np.int64))
-            ei_t = torch.from_numpy(env_idxs.astype(np.int64))
-
-            # 1. Write to compact live buffer (vectorized, L2-resident, for next inference).
+            # Write to compact live buffer (vectorized, for next inference gather).
             if self.rnn_state_live_h is not None:
-                self.rnn_state_live_h[wi_t, ei_t] = h_out
-                self.rnn_state_live_c[wi_t, ei_t] = c_out
-
-            # 2. Write to traj_tensors for training storage (scattered, necessary for Learner).
-            if "rnn_state_h" in self.traj_tensors:
-                next_s = s_t + 1
-                max_steps = self.traj_tensors["rnn_state_h"].shape[1]
-                valid = next_s < max_steps
-                if valid.any():
-                    h_valid = h_out[valid]
-                    c_valid = c_out[valid]
-                    for i, (ti, ns) in enumerate(zip(ti_t[valid].tolist(), next_s[valid].tolist())):
-                        self.traj_tensors["rnn_state_h"][ti, ns].copy_(h_valid[i])
-                        self.traj_tensors["rnn_state_c"][ti, ns].copy_(c_valid[i])
-
-        # Version stamp
-        if "model_version" in self.traj_tensors:
-            version = int(self.ctx.buffer_mgr.policy_version.item())
-            self.traj_tensors["model_version"][ti_t, s_t] = version
+                self.rnn_state_live_h[wi, ei] = h_out
+                self.rnn_state_live_c[wi, ei] = c_out
 
         t_scatter = time.monotonic()
         self.prof.add("scatter", t_scatter - t_fwd)
 
         # Set ready flags (vectorized)
-        self._set_ready_flags(worker_ids, env_idxs)
+        self._set_ready_flags(wi, ei)
 
         t_signal = time.monotonic()
         self.prof.add("set_flags", t_signal - t_scatter)
@@ -287,23 +256,18 @@ class InferenceServer:
     def _run_value(self, reqs: np.ndarray) -> None:
         """VALUE-only requests (bootstrap at trajectory boundary).
 
-        reqs: Nx5 int32 array [traj_idx, step, worker_idx, env_idx, op]
+        reqs: Nx3 int32 array [worker_idx, env_idx, op]
         """
-        traj_idxs = reqs[:, 0]
-        steps = reqs[:, 1]
-        worker_ids = reqs[:, 2]
-        env_idxs = reqs[:, 3]
+        worker_ids = reqs[:, 0]
+        env_idxs = reqs[:, 1]
 
-        inputs = self._gather_obs(traj_idxs, steps, worker_ids, env_idxs)
+        inputs, wi, ei = self._gather_obs(worker_ids, env_idxs)
 
         v = self.policy.value(inputs)
         values = v if self.device.type == "cpu" else v.cpu()
+        self.infer_val[wi, ei] = values
 
-        ti_t = torch.from_numpy(traj_idxs.astype(np.int64))
-        s_t = torch.from_numpy(steps.astype(np.int64))
-        self.traj_tensors["value"][ti_t, s_t] = values
-
-        self._set_ready_flags(worker_ids, env_idxs)
+        self._set_ready_flags(wi, ei)
 
 
 def main(ctx, logger_queue, server_idx: int = 0) -> None:

@@ -97,6 +97,31 @@ class BufferMgr:
             self.rnn_state_live_c = torch.zeros(num_workers, num_envs_per_worker, hidden)
             self.rnn_state_live_c.share_memory_()
 
+        # --- Inference I/O buffers [num_workers, num_envs_per_worker, *shape] ---
+        # Workers write obs here before sending a ZMQ request; IS reads/writes here
+        # via vectorized indexing instead of scattered traj_tensors access.
+        # This eliminates the Python for-loop gather (0.54ms) and scatter (0.43ms)
+        # on the IS hot path, replacing them with single vectorized ops (~0.01ms).
+        W, E = num_workers, num_envs_per_worker
+        self.infer_obs = torch.zeros(W, E, *obs_shape)
+        self.infer_obs.share_memory_()
+        self.infer_act = torch.zeros(W, E, *act_shape)
+        self.infer_act.share_memory_()
+        self.infer_logp = torch.zeros(W, E)
+        self.infer_logp.share_memory_()
+        self.infer_val = torch.zeros(W, E)
+        self.infer_val.share_memory_()
+        # mask used only for LSTM (non-LSTM code ignores it)
+        self.infer_mask = torch.zeros(W, E)
+        self.infer_mask.share_memory_()
+        # action_logits: only allocated when traj_tensors contains the field
+        # (continuous action spaces with kl_loss_coeff > 0)
+        self.infer_action_logits: Optional[torch.Tensor] = None
+        if "action_logits" in self.traj_tensors:
+            logits_dim = self.traj_tensors["action_logits"].shape[2]  # [num_traj, T, dim]
+            self.infer_action_logits = torch.zeros(W, E, logits_dim)
+            self.infer_action_logits.share_memory_()
+
     # ------------------------------------------------------------------
     # Convenience helpers
     # ------------------------------------------------------------------

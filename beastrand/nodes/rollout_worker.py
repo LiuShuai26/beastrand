@@ -1,15 +1,16 @@
 """
-RolloutWorker (v3): async per-env rollout via shared memory flags.
+RolloutWorker (v4): async per-env rollout via shared memory flags + compact I/O buffers.
 
 Each worker manages ``num_envs_per_worker`` environments. Every env
 independently cycles through: send inference request → poll ready_flag →
 step → send next request. This per-env async design naturally pipelines
-CPU env.step() with GPU inference — no explicit double-buffering needed
-(see docs/design/remove-worker-splits.md for rationale).
+CPU env.step() with GPU inference — no explicit double-buffering needed.
 
-The InferenceServer sets ``ready_flags[worker_idx, env_idx] = 1`` after
-writing action/logp/value into shared tensors, and the worker polls these
-flags to advance ready envs.
+Workers write obs to infer_obs[worker_idx, env_idx] before each request.
+After the IS sets ready_flags, workers read action/logp/value from the
+compact infer_* buffers (vectorized [W, E] layout) and write them to
+traj_tensors for training storage. rnn_state is written to traj_tensors
+by the worker (not the IS), keeping traj_tensors writes on the worker side.
 """
 from __future__ import annotations
 
@@ -30,7 +31,7 @@ from beastrand.nodes.logger import child_attach_logger, log_scalar
 from beastrand.strandbus.strandbus import StrandBus
 
 # Must match inference_server.py
-REQ_FMT = "<iiiii"
+REQ_FMT = "<iii"
 REQ_SIZE = struct.calcsize(REQ_FMT)
 OP_ACT = 0
 OP_VALUE = 1
@@ -70,14 +71,19 @@ class RolloutWorker:
         # Action space info (set by Manager on ctx)
         self.act_discrete = ctx.act_kind == "discrete"
 
-        # Pre-cache frequently used tensors
-        self._obs_tensor = self.traj_tensors["obs"]
-        self._act_tensor = self.traj_tensors["action"]
+        # Pre-cache frequently used traj_tensors (training storage)
         self._rew_tensor = self.traj_tensors["reward"]
         self._done_tensor = self.traj_tensors["done"]
         # Live rnn_state buffers [num_workers, num_envs, hidden] (None for non-LSTM).
         self._rnn_live_h = ctx.buffer_mgr.rnn_state_live_h
         self._rnn_live_c = ctx.buffer_mgr.rnn_state_live_c
+        # Compact inference I/O buffers (shared with IS, indexed [worker, env])
+        self._infer_obs = ctx.buffer_mgr.infer_obs
+        self._infer_act = ctx.buffer_mgr.infer_act
+        self._infer_logp = ctx.buffer_mgr.infer_logp
+        self._infer_val = ctx.buffer_mgr.infer_val
+        self._infer_mask = ctx.buffer_mgr.infer_mask
+        self._infer_action_logits = ctx.buffer_mgr.infer_action_logits
 
         # --- ZMQ (only for sending requests + filled trajectories) ---
         self.bus = StrandBus()
@@ -169,17 +175,30 @@ class RolloutWorker:
     # ------------------------------------------------------------------
 
     def _send_request(self, es: EnvState, op: int) -> None:
-        # Write obs into shared tensor
-        self._obs_tensor[es.traj_idx, es.step] = torch.from_numpy(
-            np.asarray(es.obs, dtype=np.float32))
+        wi = self.worker_idx
+        ei = es.env_idx
+        ti = es.traj_idx
+        s = es.step
 
-        # Write mask for LSTM
-        if self.use_lstm and "mask" in self.traj_tensors:
+        obs_t = torch.from_numpy(np.asarray(es.obs, dtype=np.float32))
+
+        # Write obs to compact infer_obs (for IS vectorized gather)
+        self._infer_obs[wi, ei] = obs_t
+        # Also write to traj_tensors["obs"] for training storage
+        self.traj_tensors["obs"][ti, s] = obs_t
+
+        if self.use_lstm:
+            # Capture INPUT rnn_state before IS overwrites it with the output state
+            if self._rnn_live_h is not None and "rnn_state_h" in self.traj_tensors:
+                self.traj_tensors["rnn_state_h"][ti, s] = self._rnn_live_h[wi, ei]
+                self.traj_tensors["rnn_state_c"][ti, s] = self._rnn_live_c[wi, ei]
+            # Write mask (IS reads this for the forward pass)
             mask_val = 0.0 if es.done else 1.0
-            self.traj_tensors["mask"][es.traj_idx, es.step] = mask_val
+            self._infer_mask[wi, ei] = mask_val
+            if "mask" in self.traj_tensors:
+                self.traj_tensors["mask"][ti, s] = mask_val
 
-        msg = struct.pack(REQ_FMT, es.traj_idx, es.step,
-                          self.worker_idx, es.env_idx, op)
+        msg = struct.pack(REQ_FMT, wi, ei, op)
         self.bus.send("infer_req", msg)
         es.pending = True
 
@@ -190,13 +209,25 @@ class RolloutWorker:
     def _advance_single(self, es: EnvState) -> None:
         ti = es.traj_idx
         s = es.step
+        wi = self.worker_idx
+        ei = es.env_idx
 
-        # Read action from shared tensor (inference server already wrote it)
-        action_t = self._act_tensor[ti, s]
+        # Read action/logp/value from compact infer_* buffers, write to traj_tensors.
+        # obs/mask/rnn_state were already written to traj_tensors in _send_request.
+        act_val = self._infer_act[wi, ei]
         if self.act_discrete:
-            action = int(action_t[0].item())
+            action = int(act_val[0].item())
         else:
-            action = action_t.numpy().copy()
+            action = act_val.numpy().copy()
+        self.traj_tensors["action"][ti, s] = act_val
+        if "log_prob" in self.traj_tensors:
+            self.traj_tensors["log_prob"][ti, s] = self._infer_logp[wi, ei]
+        if "value" in self.traj_tensors:
+            self.traj_tensors["value"][ti, s] = self._infer_val[wi, ei]
+        if self._infer_action_logits is not None and "action_logits" in self.traj_tensors:
+            self.traj_tensors["action_logits"][ti, s] = self._infer_action_logits[wi, ei]
+        if "model_version" in self.traj_tensors:
+            self.traj_tensors["model_version"][ti, s] = int(self.ctx.buffer_mgr.policy_version.item())
 
         # env.step
         next_obs, reward, terminated, truncated, info = es.env.step(action)
@@ -237,15 +268,12 @@ class RolloutWorker:
             es.episode_reward = 0.0
             es.episode_length = 0
 
-            # Zero LSTM state on reset (episode boundary: fresh hidden state)
-            if self.use_lstm:
-                next_step = s + 1
-                if next_step < self.traj_tensors["rnn_state_h"].shape[1]:
-                    self.traj_tensors["rnn_state_h"][ti, next_step] = 0.0
-                    self.traj_tensors["rnn_state_c"][ti, next_step] = 0.0
-                if self._rnn_live_h is not None:
-                    self._rnn_live_h[self.worker_idx, es.env_idx] = 0.0
-                    self._rnn_live_c[self.worker_idx, es.env_idx] = 0.0
+            # Zero LSTM live state on episode reset (fresh hidden state for next step).
+            # traj_tensors["rnn_state_h"][ti, s+1] will be written in _send_request
+            # when the next step is submitted, reading from this zeroed live buffer.
+            if self.use_lstm and self._rnn_live_h is not None:
+                self._rnn_live_h[self.worker_idx, es.env_idx] = 0.0
+                self._rnn_live_c[self.worker_idx, es.env_idx] = 0.0
 
         es.obs = next_obs
         es.step += 1
@@ -275,15 +303,21 @@ class RolloutWorker:
     # ------------------------------------------------------------------
 
     def _finalize_trajectory(self, es: EnvState) -> None:
-        # Optional bootstrap: write obs[T] and request VALUE
+        # Optional bootstrap: request VALUE for obs[T] (next obs after last step)
         if self.bootstrap_value and not es.done:
-            self._obs_tensor[es.traj_idx, self.T] = torch.from_numpy(
+            wi = self.worker_idx
+            ei = es.env_idx
+            # Write bootstrap obs to infer_obs (IS reads from here)
+            self._infer_obs[wi, ei] = torch.from_numpy(
                 np.asarray(es.obs, dtype=np.float32))
             # Send value request and busy-wait for flag
             self._send_request_value(es)
-            while not self.ready_flags[self.worker_idx, es.env_idx]:
+            while not self.ready_flags[wi, ei]:
                 pass  # spin — value requests are rare and fast
-            self.ready_flags[self.worker_idx, es.env_idx] = 0
+            self.ready_flags[wi, ei] = 0
+            # Write bootstrap value to traj_tensors
+            if "value" in self.traj_tensors:
+                self.traj_tensors["value"][es.traj_idx, self.T] = self._infer_val[wi, ei]
         elif "value" in self.traj_tensors:
             self.traj_tensors["value"][es.traj_idx, self.T] = 0.0
 
@@ -322,18 +356,15 @@ class RolloutWorker:
         es.step = 0
         es.done = False
 
-        # Initialize LSTM state for new trajectory (trajectory boundary: always reset to 0)
-        if self.use_lstm:
-            self.traj_tensors["rnn_state_h"][es.traj_idx, 0] = 0.0
-            self.traj_tensors["rnn_state_c"][es.traj_idx, 0] = 0.0
-            if self._rnn_live_h is not None:
-                self._rnn_live_h[self.worker_idx, es.env_idx] = 0.0
-                self._rnn_live_c[self.worker_idx, es.env_idx] = 0.0
+        # Reset LSTM live state at trajectory boundary (always fresh hidden state).
+        # traj_tensors["rnn_state_h"][new_ti, 0] will be written in _send_request.
+        if self.use_lstm and self._rnn_live_h is not None:
+            self._rnn_live_h[self.worker_idx, es.env_idx] = 0.0
+            self._rnn_live_c[self.worker_idx, es.env_idx] = 0.0
 
     def _send_request_value(self, es: EnvState) -> None:
         """Send a VALUE-only request (bootstrap at trajectory boundary)."""
-        msg = struct.pack(REQ_FMT, es.traj_idx, self.T,
-                          self.worker_idx, es.env_idx, OP_VALUE)
+        msg = struct.pack(REQ_FMT, self.worker_idx, es.env_idx, OP_VALUE)
         self.bus.send("infer_req", msg)
         es.pending = True
 
