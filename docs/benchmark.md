@@ -1,41 +1,33 @@
 # Benchmark: Humanoid-v4 PPO (beastrand vs Sample Factory)
 
-**Date**: 2026-03-08
-**Environment**: Humanoid-v4, 10M steps, CPU
+**Date**: 2026-03-09
+**Environment**: Humanoid-v4, 10M steps
+**Test machine**: AMD Ryzen 9 5950X (16c/32t) · 32 GB RAM · NVIDIA RTX 5070 Ti 16 GB
+**Topology**: 8 workers × 8 envs = 64 envs total
+
+> **Note**: The goal of this benchmark is to show that beastrand and Sample Factory operate at the
+> same level of throughput and training efficiency — not to claim superiority. Reward results vary
+> significantly across seeds, and each framework has its own hyperparameter sweet spot that differs
+> per algorithm and environment. Fair apples-to-apples tuning would require separate hyperparameter
+> searches for each framework.
 
 ## Results
 
-| Framework | Seeds | Peak (mean) | Final 10M (mean) |
-|-----------|-------|-------------|-------------------|
-| **beastrand** | 42, 123, 7 | **5761 +/- 181** | **5735 +/- 168** |
-| Sample Factory (async) | 1 | 6095 | 6042 |
+| Framework | FPS | seed 42 | seed 123 | seed 7 | mean |
+|-----------|-----|---------|----------|--------|------|
+| **beastrand** | **17,442** | 3,582 | 6,901 | 6,735 | **5,739** |
+| Sample Factory | 14,873 | 6,814 | 6,218 | 4,906 | 5,979 |
 
-**Gap: ~5%** (within 1 sigma of SF)
+### Per-Seed FPS
 
-### Per-Seed Breakdown (beastrand)
+| Seed | beastrand FPS | SF FPS |
+|------|--------------|--------|
+| 42   | 18,022       | 15,128 |
+| 123  | 17,382       | 15,155 |
+| 7    | 16,921       | 14,336 |
+| mean | **17,442**   | 14,873 |
 
-| Seed | Peak | Final (10M) | Policy Versions |
-|------|------|-------------|-----------------|
-| 42   | 5554 | 5540        | 2442            |
-| 123  | 5899 | 5833        | 2444            |
-| 7    | 5831 | 5831        | 2441            |
-
-### Learning Curve Milestones (seed 42)
-
-| Steps | Reward | Avg Episode Length |
-|-------|--------|--------------------|
-| 1M    | 539    | 104                |
-| 2M    | 727    | 139                |
-| 3M    | 1049   | 195                |
-| 4M    | 1597   | 294                |
-| 5M    | 2752   | 477                |
-| 6M    | 4385   | 752                |
-| 7M    | 4698   | 797                |
-| 8M    | 5204   | 859                |
-| 9M    | 5764   | 936                |
-| 10M   | 5540   | 912                |
-
-## Command
+## beastrand Command
 
 ```bash
 python -m ppo.train \
@@ -111,18 +103,13 @@ Args(
 )
 ```
 
-## Sample Factory Reference Run
+## Sample Factory Command
 
 ```bash
-python -m sample_factory.huggingface.load_from_hub -r edbeeching/ppo_mujoco_humanoid-v4 -d ./sf_train_dir
-
 python -m sf_examples.mujoco.train_mujoco \
   --env=mujoco_humanoid \
   --train_dir=./sf_train_dir \
   --experiment=Humanoid-v4 \
-  --device=cpu \
   --async_rl=True \
   --train_for_env_steps=10000000
 ```
-
-SF async result: peak 6095, final 6042, policy lag avg=10, max=15.

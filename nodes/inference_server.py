@@ -233,10 +233,14 @@ class InferenceServer:
             max_steps = self.traj_tensors["rnn_state_h"].shape[1]
             valid = next_s < max_steps
             if valid.any():
-                vti = ti_t[valid]
-                vns = next_s[valid]
-                self.traj_tensors["rnn_state_h"][vti, vns] = h_out[valid]
-                self.traj_tensors["rnn_state_c"][vti, vns] = c_out[valid]
+                # Scalar indexing + copy_ mirrors the gather pattern and avoids
+                # advanced-indexing scatter on a large [num_traj, T+1, hidden]
+                # tensor, which causes severe cache misses on shared memory.
+                h_valid = h_out[valid]
+                c_valid = c_out[valid]
+                for i, (ti, ns) in enumerate(zip(ti_t[valid].tolist(), next_s[valid].tolist())):
+                    self.traj_tensors["rnn_state_h"][ti, ns].copy_(h_valid[i])
+                    self.traj_tensors["rnn_state_c"][ti, ns].copy_(c_valid[i])
 
         # Version stamp
         if "model_version" in self.traj_tensors:
