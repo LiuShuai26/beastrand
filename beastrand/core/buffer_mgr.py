@@ -8,7 +8,7 @@ slot indices from a mp.Queue — no attach/detach, no extra file descriptors.
 from __future__ import annotations
 
 import multiprocessing as mp
-from typing import Dict, Tuple
+from typing import Dict, Optional, Tuple
 
 import torch
 import numpy as np
@@ -82,6 +82,20 @@ class BufferMgr:
         # --- async ready flags (inference server sets, workers poll) -------
         self.ready_flags = torch.zeros(num_workers, num_envs_per_worker, dtype=torch.int32)
         self.ready_flags.share_memory_()
+
+        # --- LSTM live state buffers [num_workers, num_envs_per_worker, hidden] ---
+        # Compact buffer for inference hot-path: avoids random access into the large
+        # traj_tensors["rnn_state_h"] [num_traj, T+1, hidden] tensor.
+        # traj_tensors still stores per-step history for training; this buffer holds
+        # only the *current* rnn_state per (worker, env) pair, fits entirely in L2 cache.
+        self.rnn_state_live_h: Optional[torch.Tensor] = None
+        self.rnn_state_live_c: Optional[torch.Tensor] = None
+        if "rnn_state_h" in self.traj_tensors:
+            hidden = self.traj_tensors["rnn_state_h"].shape[2]  # [num_traj, T+1, hidden]
+            self.rnn_state_live_h = torch.zeros(num_workers, num_envs_per_worker, hidden)
+            self.rnn_state_live_h.share_memory_()
+            self.rnn_state_live_c = torch.zeros(num_workers, num_envs_per_worker, hidden)
+            self.rnn_state_live_c.share_memory_()
 
     # ------------------------------------------------------------------
     # Convenience helpers

@@ -75,6 +75,9 @@ class RolloutWorker:
         self._act_tensor = self.traj_tensors["action"]
         self._rew_tensor = self.traj_tensors["reward"]
         self._done_tensor = self.traj_tensors["done"]
+        # Live rnn_state buffers [num_workers, num_envs, hidden] (None for non-LSTM).
+        self._rnn_live_h = ctx.buffer_mgr.rnn_state_live_h
+        self._rnn_live_c = ctx.buffer_mgr.rnn_state_live_c
 
         # --- ZMQ (only for sending requests + filled trajectories) ---
         self.bus = StrandBus()
@@ -234,12 +237,15 @@ class RolloutWorker:
             es.episode_reward = 0.0
             es.episode_length = 0
 
-            # Zero LSTM state on reset
+            # Zero LSTM state on reset (episode boundary: fresh hidden state)
             if self.use_lstm:
                 next_step = s + 1
                 if next_step < self.traj_tensors["rnn_state_h"].shape[1]:
                     self.traj_tensors["rnn_state_h"][ti, next_step] = 0.0
                     self.traj_tensors["rnn_state_c"][ti, next_step] = 0.0
+                if self._rnn_live_h is not None:
+                    self._rnn_live_h[self.worker_idx, es.env_idx] = 0.0
+                    self._rnn_live_c[self.worker_idx, es.env_idx] = 0.0
 
         es.obs = next_obs
         es.step += 1
@@ -316,10 +322,13 @@ class RolloutWorker:
         es.step = 0
         es.done = False
 
-        # Initialize LSTM state for new trajectory
+        # Initialize LSTM state for new trajectory (trajectory boundary: always reset to 0)
         if self.use_lstm:
             self.traj_tensors["rnn_state_h"][es.traj_idx, 0] = 0.0
             self.traj_tensors["rnn_state_c"][es.traj_idx, 0] = 0.0
+            if self._rnn_live_h is not None:
+                self._rnn_live_h[self.worker_idx, es.env_idx] = 0.0
+                self._rnn_live_c[self.worker_idx, es.env_idx] = 0.0
 
     def _send_request_value(self, es: EnvState) -> None:
         """Send a VALUE-only request (bootstrap at trajectory boundary)."""
