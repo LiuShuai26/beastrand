@@ -70,14 +70,23 @@ All config fields are CLI flags via [tyro](https://github.com/brentyi/tyro). Run
 | **beastrand**  | 16,226     | 5,858            | 5,392             | 5,535           | 5,595         |
 | Sample Factory | **18,438** | 6,274            | 5,979             | 6,184           | **6,146**     |
 
-| Seed | beastrand FPS | SF FPS     |
-|------|---------------|------------|
-| 42   | 16,534        | 18,639     |
-| 123  | 15,571        | 18,517     |
-| 7    | 16,573        | 18,159     |
-| mean | 16,226        | **18,438** |
+Both frameworks achieve comparable throughput and training efficiency. Reward results vary across seeds; each framework has its own hyperparameter sweet spot per algorithm and environment.
 
-Both frameworks achieve comparable throughput and training efficiency. Reward results vary across seeds; each framework has its own hyperparameter sweet spot per algorithm and environment. See [docs/benchmark.md](docs/benchmark.md) for hyperparameters and methodology.
+**Scaling: 24w × 8e = 192 envs (beastrand only)**
+
+| Metric | seed 42 | seed 123 | seed 7 | mean       |
+|--------|---------|----------|--------|------------|
+| Reward | 5,829   | 5,704    | 5,868  | 5,800      |
+| FPS    | 34,948  | 34,690   | 34,315 | **34,651** |
+
+| Resource    | Utilization                |
+|-------------|----------------------------|
+| GPU compute | 48%                        |
+| GPU memory  | 788 MiB / 16,303 MiB (5%) |
+| CPU usr     | 81%                        |
+| CPU idle    | 17%                        |
+
+See [docs/benchmark.md](docs/benchmark.md) for full details and hyperparameters.
 
 ## Architecture
 

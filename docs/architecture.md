@@ -241,7 +241,7 @@ log_scalar(run="learner", tag="pi_loss", value=0.05, step=100)
 | GPU utilization | ~10% | ~20-30% | ~60-80% | ~40-60% | ~65-75% |
 | Multi-machine | No | No | No | Yes (Ray) | No (tcp:// ready) |
 | Algorithms | Many | 6+ | PPO/APPO | 30+ | PPO family |
-| AMP support | No | No | No | No | Native |
+| AMP support | No | No | No | No | Example project |
 | Read full codebase | 1 hour | Impractical | Days | Impractical | Half a day |
 
 beastrand and Sample Factory (default config, without V-trace) implement the same algorithm: async-collected standard PPO with clipped ratio. The difference is engineering: 3K lines vs 30K lines for comparable throughput.

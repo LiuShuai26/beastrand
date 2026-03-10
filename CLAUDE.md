@@ -49,10 +49,11 @@ The `Manager` (nodes/manager.py) is the orchestrator. It creates shared resource
 
 **Nodes** (each runs in its own process):
 - **Manager** — probes env, creates BufferMgr + ParameterServer, spawns and monitors all nodes
+- **Logger** — daemon process, sole TensorBoard SummaryWriter
 - **DataServer** — pure forwarder: routes filled trajectory IDs from workers to learner
 - **InferenceServer** — zero-copy batched GPU inference via shared tensors + struct.pack ZMQ messages
 - **Learner** — ingest thread (GAE computation) + main thread (PPO training), updates shared weights via ParameterServer
-- **RolloutWorker** (×N) — each manages num_envs_per_worker environments with async per-env polling (no splits)
+- **RolloutWorker** (×N) — each manages num_envs_per_worker environments with async per-env polling
 
 ### Shared memory: PyTorch share_memory_()
 
