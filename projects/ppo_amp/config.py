@@ -20,8 +20,8 @@ class Args:
 
     bootstrap_value: bool = field(default=True, init=False)
 
-    inference_device: str = field(default="cpu", metadata={"help": "InferenceServer device (cpu/cuda/mps)"})
-    learner_device: str = field(default="cpu", metadata={"help": "Learner device (cpu/cuda/mps)"})
+    inference_device: str = field(default="cuda", metadata={"help": "InferenceServer device (cpu/cuda/mps)"})
+    learner_device: str = field(default="cuda", metadata={"help": "Learner device (cpu/cuda/mps)"})
     num_inference_servers: int = field(default=1, metadata={"help": "Number of InferenceServer processes"})
 
     # --- Environment ---

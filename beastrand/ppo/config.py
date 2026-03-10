@@ -14,8 +14,8 @@ class Args:
 
     make_env_path: Optional[str] = field(default=None, metadata={"help": "Dotted path to custom env factory (e.g. core.envs.make_env.make_env)"})
 
-    inference_device: str = field(default="cpu", metadata={"help": "InferenceServer device (cpu/cuda/mps)"})
-    learner_device: str = field(default="cpu", metadata={"help": "Learner device (cpu/cuda/mps)"})
+    inference_device: str = field(default="cuda", metadata={"help": "InferenceServer device (cpu/cuda/mps)"})
+    learner_device: str = field(default="cuda", metadata={"help": "Learner device (cpu/cuda/mps)"})
     num_inference_servers: int = field(default=1, metadata={"help": "Number of InferenceServer processes"})
     # Experiment & environment
     env_id: str = field(default="Humanoid-v5", metadata={"help": "Gym/Gymnasium env id"})

@@ -65,8 +65,8 @@ All config fields are CLI flags via [tyro](https://github.com/brentyi/tyro). Run
 
 **Test machine:** AMD Ryzen 9 5950X (16c/32t) · 32 GB RAM · NVIDIA RTX 5070 Ti 16 GB · 8 workers × 8 envs = 64 envs total
 
-| Framework | FPS | seed 42 | seed 123 | seed 7 | mean |
-|-----------|-----|---------|----------|--------|------|
+| Framework | FPS | Reward (seed 42) | Reward (seed 123) | Reward (seed 7) | Reward (mean) |
+|-----------|-----|------------------|-------------------|-----------------|---------------|
 | **beastrand** | **17,442** | 3,582 | 6,901 | 6,735 | **5,739** |
 | Sample Factory | 14,873 | 6,814 | 6,218 | 4,906 | 5,979 |
 

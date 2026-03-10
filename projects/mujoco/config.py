@@ -33,6 +33,6 @@ class Args(PPOArgs):
     max_grad_norm: float = field(default=3.5, metadata={"help": "Max gradient norm"})
     value_coef: float = field(default=1.3, metadata={"help": "Value loss coefficient"})
     entropy_coef: float = field(default=0.0, metadata={"help": "Entropy coefficient"})
-    kl_loss_coeff: float = field(default=0.0, metadata={"help": "KL penalty coefficient"})
+    kl_loss_coeff: float = field(default=0.1, metadata={"help": "KL penalty coefficient"})
     normalize_input: bool = field(default=True, metadata={"help": "Normalize observations"})
     normalize_returns: bool = field(default=True, metadata={"help": "Normalize value targets"})
