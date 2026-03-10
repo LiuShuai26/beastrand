@@ -4,8 +4,7 @@ This document is a deep dive into beastrand's internals: data flow, shared resou
 
 ## Process Model
 
-beastrand uses a multi-process architecture with 5 node types, all spawned by the Manager:
-
+beastrand uses a multi-process architecture with 6 node types. Manager is the main process that spawns the rest:
 ```
 Manager (main process)
 ├── Logger              daemon, TensorBoard writer
