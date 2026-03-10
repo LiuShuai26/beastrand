@@ -6,26 +6,25 @@
 **Topology**: 8 workers × 8 envs = 64 envs total
 
 > **Note**: The goal of this benchmark is to show that beastrand and Sample Factory operate at the
-> same level of throughput and training efficiency — not to claim superiority. Reward results vary
-> significantly across seeds, and each framework has its own hyperparameter sweet spot that differs
-> per algorithm and environment. Fair apples-to-apples tuning would require separate hyperparameter
-> searches for each framework.
+> same level of throughput and training efficiency. Reward results vary
+> across seeds, and each framework has its own hyperparameter sweet spot that differs
+> per algorithm and environment.
 
 ## Results
 
-| Framework | FPS | Reward (seed 42) | Reward (seed 123) | Reward (seed 7) | Reward (mean) |
-|-----------|-----|------------------|-------------------|-----------------|---------------|
-| **beastrand** | **17,442** | 3,582 | 6,901 | 6,735 | **5,739** |
-| Sample Factory | 14,873 | 6,814 | 6,218 | 4,906 | 5,979 |
+| Framework      | FPS        | Reward (seed 42) | Reward (seed 123) | Reward (seed 7) | Reward (mean) |
+|----------------|------------|------------------|-------------------|-----------------|---------------|
+| **beastrand**  | 16,226     | 5,858            | 5,392             | 5,535           | 5,595         |
+| Sample Factory | **18,438** | 6,274            | 5,979             | 6,184           | **6,146**     |
 
 ### Per-Seed FPS
 
-| Seed | beastrand FPS | SF FPS |
-|------|--------------|--------|
-| 42   | 18,022       | 15,128 |
-| 123  | 17,382       | 15,155 |
-| 7    | 16,921       | 14,336 |
-| mean | **17,442**   | 14,873 |
+| Seed | beastrand FPS | SF FPS     |
+|------|---------------|------------|
+| 42   | 16,534        | 18,639     |
+| 123  | 15,571        | 18,517     |
+| 7    | 16,573        | 18,159     |
+| mean | 16,226        | **18,438** |
 
 ## beastrand Command
 

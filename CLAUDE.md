@@ -4,9 +4,9 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Overview
 
-beastrand is a distributed PPO training framework for physics-based game AI. It uses a multi-process, node-based architecture with ZMQ IPC for communication and PyTorch shared-memory tensors for zero-copy data sharing.
+beastrand is a high-throughput distributed PPO training framework — as simple as CleanRL, as fast as Sample Factory. ~3K lines of core code with a multi-process, node-based architecture using ZMQ IPC and PyTorch shared-memory tensors for zero-copy data sharing. Works with any Gymnasium env (MuJoCo, Atari, etc.) or custom C++ environments compiled as `.so` modules.
 
-**PPO-only by design**: The target user is building physics-based game AI (continuous control, character animation). PPO is the de facto standard for this domain (DeepMimic, AMP, ASE, IsaacGym all use PPO). One algorithm done well > many done poorly. PPO variants cover all practical needs: PPO (base), PPO-LSTM (partial observability), PPO-AMP (motion imitation).
+The core framework provides PPO; `projects/` contains example extensions (PPO-LSTM, PPO-AMP, MuJoCo, Atari) that demonstrate how to build on top of core without modifying it.
 
 ## Commands
 
@@ -63,7 +63,7 @@ The `Manager` (nodes/manager.py) is the orchestrator. It creates shared resource
 ### Communication patterns
 
 **StrandBus** (beastrand/strandbus/strandbus.py) wraps ZMQ with named sockets. All IPC uses `ipc:///tmp/beatstrand/<run_name>/` endpoints (unique per run, enabling concurrent training):
-- `infer.req` — PUSH/PULL for inference requests (struct.pack, 20 bytes)
+- `infer.req` — PUSH/PULL for inference requests (struct.pack, 8 bytes: flat_idx, op)
 - `data.filled.in` / `data.filled.out` — PUSH/PULL for filled trajectory IDs (struct.pack, 4 bytes)
 
 Inference responses use shared memory flags (`ready_flags[worker_idx, env_idx]`) instead of ZMQ — zero-overhead async signaling. No pickle on the hot path.
@@ -72,7 +72,7 @@ Inference responses use shared memory flags (`ready_flags[worker_idx, env_idx]`)
 
 1. BufferMgr creates `num_traj` trajectory slots as shared PyTorch tensors, queues all indices
 2. Worker gets traj_idx from queue, writes obs to `traj_tensors["obs"][traj_idx, step]`
-3. Worker sends struct request (20 bytes: traj_idx, step, worker_idx, env_idx, op) to InferenceServer
+3. Worker sends struct request (8 bytes: flat_idx, op) to InferenceServer
 4. InferenceServer gathers obs from shared tensors, runs forward pass, scatters action/logp/value back
 5. InferenceServer sets `ready_flags[worker_idx, env_idx] = 1` (shared memory flag)
 6. Worker polls ready_flags, reads action from shared tensor, does env.step (async — no blocking)

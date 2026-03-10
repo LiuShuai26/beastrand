@@ -6,7 +6,7 @@ As simple as [CleanRL](https://github.com/vwxyzjn/cleanrl), as fast as [Sample F
 
 ## Why beastrand?
 
-Existing frameworks force a choice: **simple but slow** (CleanRL, SB3) or **fast but opaque** (Sample Factory, RLlib). beastrand refuses this trade-off. It delivers async multi-process throughput in ~2.8K lines of core code where every component is a short, self-contained file you can read and change without fighting the framework.
+Existing frameworks force a choice: **simple but slow** (CleanRL, SB3) or **fast but opaque** (Sample Factory, RLlib). beastrand refuses this trade-off. It delivers async multi-process throughput in ~3K lines of core code where every component is a short, self-contained file you can read and change without fighting the framework.
 
 **Use beastrand if you:**
 - Need high throughput without sacrificing readability
@@ -22,7 +22,7 @@ Existing frameworks force a choice: **simple but slow** (CleanRL, SB3) or **fast
 ## Features
 
 - **High throughput** — multi-process architecture with shared-memory tensors and ZMQ IPC; zero pickle on the hot path; async collection with batched GPU inference
-- **Simple & readable** — ~2.8K lines of core code; each component is a short, self-contained file; no deep abstractions
+- **Simple & readable** — ~3K lines of core code; each component is a short, self-contained file; no deep abstractions
 - **Modular** — policy, algorithm, data record, and env factory are swappable via dotted Python paths; adding a new algorithm variant means adding one directory with 5 files, zero changes to core
 - **Flexible environments** — works with any Gymnasium env or custom C++ environments compiled as `.so` modules
 
@@ -65,10 +65,17 @@ All config fields are CLI flags via [tyro](https://github.com/brentyi/tyro). Run
 
 **Test machine:** AMD Ryzen 9 5950X (16c/32t) · 32 GB RAM · NVIDIA RTX 5070 Ti 16 GB · 8 workers × 8 envs = 64 envs total
 
-| Framework | FPS | Reward (seed 42) | Reward (seed 123) | Reward (seed 7) | Reward (mean) |
-|-----------|-----|------------------|-------------------|-----------------|---------------|
-| **beastrand** | **17,442** | 3,582 | 6,901 | 6,735 | **5,739** |
-| Sample Factory | 14,873 | 6,814 | 6,218 | 4,906 | 5,979 |
+| Framework      | FPS        | Reward (seed 42) | Reward (seed 123) | Reward (seed 7) | Reward (mean) |
+|----------------|------------|------------------|-------------------|-----------------|---------------|
+| **beastrand**  | 16,226     | 5,858            | 5,392             | 5,535           | 5,595         |
+| Sample Factory | **18,438** | 6,274            | 5,979             | 6,184           | **6,146**     |
+
+| Seed | beastrand FPS | SF FPS     |
+|------|---------------|------------|
+| 42   | 16,534        | 18,639     |
+| 123  | 15,571        | 18,517     |
+| 7    | 16,573        | 18,159     |
+| mean | 16,226        | **18,438** |
 
 Both frameworks achieve comparable throughput and training efficiency. Reward results vary across seeds; each framework has its own hyperparameter sweet spot per algorithm and environment. See [docs/benchmark.md](docs/benchmark.md) for hyperparameters and methodology.
 

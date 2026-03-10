@@ -236,7 +236,7 @@ log_scalar(run="learner", tag="pi_loss", value=0.05, step=100)
 
 |  | CleanRL | SB3 | Sample Factory | RLlib | beastrand |
 |--|---------|-----|----------------|-------|-----------|
-| Core code | ~300 LOC/algo | ~50K LOC | ~30K LOC | ~200K+ LOC | ~2K LOC |
+| Core code | ~300 LOC/algo | ~50K LOC | ~30K LOC | ~200K+ LOC | ~3K LOC |
 | Process model | Single | SubprocVecEnv | Multi-process async | Ray actors | Multi-process async |
 | Data transfer | In-memory | Pickle over pipe | Shared memory | Ray object store | Shared memory + ZMQ |
 | GPU utilization | ~10% | ~20-30% | ~60-80% | ~40-60% | ~65-75% |
@@ -245,7 +245,7 @@ log_scalar(run="learner", tag="pi_loss", value=0.05, step=100)
 | AMP support | No | No | No | No | Native |
 | Read full codebase | 1 hour | Impractical | Days | Impractical | Half a day |
 
-beastrand and Sample Factory (default config, without V-trace) implement the same algorithm: async-collected standard PPO with clipped ratio. The difference is engineering: 2K lines vs 30K lines for comparable throughput.
+beastrand and Sample Factory (default config, without V-trace) implement the same algorithm: async-collected standard PPO with clipped ratio. The difference is engineering: 3K lines vs 30K lines for comparable throughput.
 
 ## Code Organisation: Framework vs Projects
 

@@ -56,4 +56,4 @@ done
 echo ""
 echo "=== All benchmark runs complete ==="
 echo "Logs in ${LOGDIR}/bench_*.log"
-echo "To view results: grep -E 'fps|reward|SPS' ${LOGDIR}/bench_*.log"
+echo "To view results: grep -E 'fps|reward|FPS' ${LOGDIR}/bench_*.log"
