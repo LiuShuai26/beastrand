@@ -318,7 +318,8 @@ class RolloutWorker:
                 np.asarray(es.obs, dtype=np.float32))
             self._send_request_value(es)
             while not self.ready_flags[flat_idx]:
-                pass  # spin — value requests are rare and fast
+                if self.ctx.stop_event.is_set():
+                    return
             self.ready_flags[flat_idx] = 0
             if "value" in self.traj_tensors:
                 self.traj_tensors["value"][es.traj_idx, self.T] = self._infer_val[flat_idx]

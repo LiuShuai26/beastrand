@@ -21,6 +21,7 @@ import torch
 import gymnasium as gym
 
 from beastrand.core.buffer_mgr import BufferMgr
+from beastrand.core.contract import validate_contracts
 from beastrand.utils.import_utils import get_object_from_path
 from beastrand.utils.model_sharing import ParameterServer
 
@@ -177,12 +178,18 @@ class Manager:
         self.ctx.act_low = act_spec["low"]
         self.ctx.act_high = act_spec["high"]
 
-        # 2. Compute topology
+        # 2. Validate module contracts (DataRecord ↔ Policy ↔ Algorithm)
+        record_cls = get_object_from_path(self.args.data_record_path)
+        policy_cls = get_object_from_path(self.args.policy_path)
+        algorithm_cls = get_object_from_path(self.args.algorithm_path)
+        validate_contracts(self.ctx, record_cls, policy_cls, algorithm_cls)
+
+        # 3. Compute topology
         num_workers = self.args.num_workers
         num_envs_per_worker = self.args.num_envs_per_worker
         T = self.args.rollout
 
-        # 3. Create BufferMgr (shared tensors + split flags)
+        # 4. Create BufferMgr (shared tensors + split flags)
         buffer_mgr = BufferMgr(
             cfg=self.ctx,  # passes through to DataRecord.alloc_specs
             obs_shape=self.ctx.obs_shape,
@@ -195,15 +202,14 @@ class Manager:
         self.ctx.buffer_mgr = buffer_mgr
         logging.info("BufferMgr: %d trajectories (split_depth=2), T=%d", buffer_mgr.num_traj, T)
 
-        # 4. Create ParameterServer (shared weights, always CPU)
-        policy_cls = get_object_from_path(self.args.policy_path)
+        # 5. Create ParameterServer (shared weights, always CPU)
         init_policy = policy_cls(self.ctx)  # CPU — just need state_dict shape
         param_server = ParameterServer(init_policy, torch.device("cpu"), buffer_mgr.policy_version)
         self.ctx.param_server = param_server
         del init_policy
         logging.info("ParameterServer: shared weights created")
 
-        # 5. Spawn nodes
+        # 6. Spawn nodes
         log_q = get_logger_queue()
 
         # Spawn order matters: downstream nodes (that bind ZMQ sockets) must

@@ -230,7 +230,7 @@ def ppo_update(
             eval_out = policy.evaluate_actions(inputs)
             newlogprob, entropy, newvalue = eval_out["logp"], eval_out["entropy"], eval_out["value"]
             logratio = newlogprob - b_logprobs[start:end]
-            ratio = torch.clamp(logratio.exp(), 0.05, 20.0)
+            ratio = torch.clamp(logratio.exp(), 0.05, 20.0)  # SF-style numerical safety clamp
 
             # Approximate KL for monitoring (always computed, cheap)
             with torch.no_grad():

@@ -53,7 +53,7 @@ class RunningMeanStd:
 
     def denormalize(self, x: np.ndarray) -> np.ndarray:
         """Invert normalize: recover original scale."""
-        return np.clip(x, -self.clip, self.clip) * np.sqrt(self.var + self.epsilon) + self.mean
+        return x * np.sqrt(self.var + self.epsilon) + self.mean
 
 
 class RunningMeanStdTorch(nn.Module):

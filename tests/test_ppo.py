@@ -331,7 +331,7 @@ class TestPPOUpdate:
         expected_keys = {
             "pi_loss", "v_loss", "entropy", "adv_mean", "adv_std",
             "value_mean", "value_std", "entropy_coef", "approx_kl",
-            "analytical_kl", "clip_frac", "num_minibatches",
+            "analytical_kl", "clip_frac", "num_minibatches", "grad_norm",
         }
         assert set(stats.keys()) == expected_keys
 
@@ -426,7 +426,8 @@ class TestRunningMeanStd:
 class TestNormalizeReturns:
 
     def test_returns_differ_with_normalization(self):
-        """compute_gae with returns_rms produces different returns than without."""
+        """compute_gae with a pre-trained returns_rms denormalizes values,
+        producing different advantages/returns than without."""
         T = 4
         ctx = _Ctx(rollout=T, gamma=0.99, lam=0.95)
 
@@ -437,29 +438,26 @@ class TestNormalizeReturns:
         view_plain = _make_gae_view(T, rewards, done, values)
         compute_gae(ctx, view_plain)
 
-        view_norm = _make_gae_view(T, rewards, done, values)
+        # Pre-train rms so denormalize is NOT identity (mean=50, var large)
         rms = RunningMeanStd()
+        rms.update(np.arange(100, dtype=np.float32))
+
+        view_norm = _make_gae_view(T, rewards, done, values)
         compute_gae(ctx, view_norm, returns_rms=rms)
 
-        # Returns should differ (normalized vs raw)
-        assert not np.allclose(view_plain["return"], view_norm["return"], atol=1e-6)
-        # Advantages should be the same (GAE uses denormalized values,
-        # and values start at the same real scale when rms has no prior data)
-        # Note: on first call rms has mean=0, var=1, so denormalize is identity.
-        # After the first update, rms changes. The advantages should still be
-        # equal on the first call since denormalize(x) ≈ x when rms is fresh.
-        np.testing.assert_allclose(
-            view_plain["advantage"], view_norm["advantage"], atol=1e-5
-        )
+        # With rms active, denormalized values differ → different advantages
+        assert not np.allclose(view_plain["advantage"], view_norm["advantage"], atol=1e-3)
 
     def test_repeated_batches_normalize(self):
-        """After multiple batches, normalized returns should have smaller scale."""
+        """After multiple batches, rms.update() tracks the return scale,
+        and normalize() produces roughly unit-scale values."""
         T = 8
         rng = np.random.default_rng(99)
         ctx = _Ctx(rollout=T, gamma=0.99, lam=0.95)
         rms = RunningMeanStd()
 
-        # Feed several trajectories with large rewards
+        # Simulate the PPOAlgorithm flow: compute_gae (denormalize values),
+        # then rms.update(returns), then rms.normalize(returns).
         for _ in range(20):
             view = _make_gae_view(
                 T,
@@ -468,14 +466,16 @@ class TestNormalizeReturns:
                 values=(rng.random(T + 1) * 50).astype(np.float32),
             )
             compute_gae(ctx, view, returns_rms=rms)
+            # PPOAlgorithm.update() calls rms.update then rms.normalize
+            rms.update(view["return"])
 
         # After many updates, rms should track the reward scale
         assert rms.var > 1.0  # variance should be large (rewards are ~0-100)
 
-        # Normalized returns from the last batch should be roughly unit-scale
-        last_returns = view["return"]
-        assert np.abs(np.mean(last_returns)) < 5.0  # much smaller than raw ~50
-        assert np.std(last_returns) < 5.0  # much smaller than raw scale
+        # Normalized returns should be much smaller than raw scale (~50-100)
+        normed = rms.normalize(view["return"])
+        assert np.abs(np.mean(normed)) < 5.0
+        assert np.std(normed) < 5.0
 
 
 # ---------------------------------------------------------------------------
