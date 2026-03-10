@@ -45,7 +45,7 @@ tensorboard --logdir train_logs/
 
 ### Node-based multi-process design
 
-The `Manager` (nodes/manager.py) is the orchestrator. It creates shared resources (BufferMgr, ParameterServer), spawns all nodes, and monitors until completion. Startup order: DataServer → Learner → InferenceServer → Workers.
+The `Manager` (nodes/manager.py) is the orchestrator. It probes the env, validates module contracts (DataRecord ↔ Policy ↔ Algorithm), creates shared resources (BufferMgr, ParameterServer), spawns all nodes with ready-event handshake, and monitors until completion. Startup order: DataServer → Learner → InferenceServer → Workers. Binding nodes signal readiness via `mp.Event`; Manager waits on these before spawning connecting nodes.
 
 **Nodes** (each runs in its own process):
 - **Manager** — probes env, creates BufferMgr + ParameterServer, spawns and monitors all nodes

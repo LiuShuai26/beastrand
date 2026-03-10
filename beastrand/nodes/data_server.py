@@ -28,6 +28,10 @@ class DataServer:
         self.bus.open("filled_out", mode="push", endpoint=f"{base}/data.filled.out", bind=True)
 
     def serve(self) -> None:
+        # Signal Manager that ZMQ sockets are bound
+        ev = self.ctx.ready_events.get("data_server")
+        if ev is not None:
+            ev.set()
         logging.info("[data_server] ready (pure forwarder)")
         try:
             while not self.ctx.stop_event.is_set():

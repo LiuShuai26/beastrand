@@ -118,6 +118,11 @@ class InferenceServer:
 
         # Initial weight load
         self.param_client.ensure_updated(self.policy)
+
+        # Signal Manager that ZMQ sockets are bound and we're ready
+        ev = self.ctx.ready_events.get(f"inference_server_{self.server_idx}")
+        if ev is not None:
+            ev.set()
         logging.info("[inference:%d] ready (device=%s, lstm=%s)", self.server_idx, self.device, self.use_lstm)
 
         try:

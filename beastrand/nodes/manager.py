@@ -3,10 +3,11 @@ Manager (v2): orchestrate all nodes.
 
 Startup flow:
   1. Probe env → obs/act specs
-  2. Create BufferMgr (shared tensors + queue)
-  3. Create ParameterServer (shared weights + version + lock)
-  4. Spawn DataServer, Learner, InferenceServer, Workers
-  5. Monitor until target steps or crash
+  2. Validate module contracts (DataRecord ↔ Policy ↔ Algorithm)
+  3. Create BufferMgr (shared tensors + split flags)
+  4. Create ParameterServer (shared weights + version + lock)
+  5. Spawn nodes with ready-event handshake (no sleep-based waits)
+  6. Monitor until target steps or crash
 """
 from __future__ import annotations
 
@@ -103,6 +104,9 @@ class Shared:
         # Unique IPC directory for this run (avoids collisions between concurrent runs)
         self.ipc_dir = f"ipc:///tmp/beatstrand/{self.run_name}"
 
+        # Ready events: nodes set these after ZMQ bind completes
+        self.ready_events: Dict[str, mp.Event] = {}
+
         # Filled by Manager.launch() before spawning children
         self.buffer_mgr: Optional[BufferMgr] = None
         self.param_server: Optional[ParameterServer] = None
@@ -136,6 +140,12 @@ class Manager:
         p.start()
         self.procs[name] = p
         logging.info("spawned %s [pid=%s]", name, p.pid)
+
+    def _wait_ready(self, name: str, timeout: float = 10.0) -> None:
+        ev = self.ctx.ready_events[name]
+        if not ev.wait(timeout=timeout):
+            raise RuntimeError(f"{name} did not become ready within {timeout}s")
+        logging.info("%s ready", name)
 
     def _signal_all(self) -> None:
         self.ctx.stop_event.set()
@@ -209,24 +219,31 @@ class Manager:
         del init_policy
         logging.info("ParameterServer: shared weights created")
 
-        # 6. Spawn nodes
+        # 6. Spawn nodes (with ready-event handshake)
+        #
+        # Nodes that bind ZMQ sockets signal readiness via mp.Event.
+        # Manager waits for binders before spawning connectors.
         log_q = get_logger_queue()
 
-        # Spawn order matters: downstream nodes (that bind ZMQ sockets) must
-        # start before upstream nodes (that connect). Sleeps give ZMQ time to
-        # bind; a production system would use a handshake protocol instead.
+        # Phase 1: DataServer (binds data.filled.in, data.filled.out)
+        self.ctx.ready_events["data_server"] = mp.Event()
         self._spawn("data_server", data_server_main, logger_queue=log_q)
-        time.sleep(0.5)
+        self._wait_ready("data_server")
 
+        # Phase 2: Learner (connects to data.filled.out — DataServer must be ready)
         self._spawn("learner", learner_main, logger_queue=log_q)
-        time.sleep(0.5)
 
+        # Phase 3: InferenceServers (bind infer_{i}.req)
         num_infer = getattr(self.args, "num_inference_servers", 1)
         for i in range(num_infer):
-            self._spawn(f"inference_server_{i}", inference_server_main,
+            name = f"inference_server_{i}"
+            self.ctx.ready_events[name] = mp.Event()
+            self._spawn(name, inference_server_main,
                         logger_queue=log_q, server_idx=i)
-        time.sleep(1.0)
+        for i in range(num_infer):
+            self._wait_ready(f"inference_server_{i}")
 
+        # Phase 4: Workers (connect to infer_{i}.req, data.filled.in — all binders ready)
         for i in range(num_workers):
             self._spawn(f"worker_{i}", worker_main, worker_idx=i, logger_queue=log_q)
 

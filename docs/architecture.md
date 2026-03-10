@@ -14,7 +14,7 @@ Manager (main process)
 └── Worker × N          env stepping + inference requests
 ```
 
-**Startup order matters**: downstream nodes (that bind ZMQ sockets) start before upstream nodes (that connect). Sleeps between spawns give ZMQ time to bind.
+**Startup order matters**: downstream nodes (that bind ZMQ sockets) start before upstream nodes (that connect). Each binding node signals readiness via `mp.Event`; Manager waits on these events before spawning connecting nodes (no sleep-based waits).
 
 ### Why Multi-Process (not Multi-Thread)?
 
@@ -199,7 +199,9 @@ Four pluggable extension points, specified as dotted Python paths in the config:
 
 Resolved at runtime via `get_object_from_path()` (6-line importlib wrapper). To add a new variant: implement the interface, set the path in config. No framework code changes.
 
-**Trade-off**: No IDE jump-to-definition for dynamic paths, and typos only surface at runtime. But adding PPO-LSTM or PPO-AMP required zero changes to the core infrastructure.
+**Contract validation**: At startup, Manager calls `validate_contracts()` (core/contract.py) which verifies the three-way contract between DataRecord, Policy, and Algorithm: `alloc_specs()` → fake view → `build_batch()` must produce valid arrays, and `policy.act()` must return `"action"`. Mismatches (e.g., typo'd key in a new project's DataRecord) fail at startup with a clear error, not minutes into training.
+
+**Trade-off**: No IDE jump-to-definition for dynamic paths. But contract validation catches typos at startup, and adding PPO-LSTM or PPO-AMP required zero changes to the core infrastructure.
 
 ## PPO Algorithm
 

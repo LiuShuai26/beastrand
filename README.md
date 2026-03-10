@@ -103,4 +103,4 @@ Extensions built on top of the core framework:
 | `projects/mujoco` | MuJoCo-tuned hyperparameters |
 | `projects/atari` | CNN policy with frame stacking |
 
-Each project is a self-contained directory (policy, algorithm, data record, config, train entry point). All were added with **zero changes to core code**.
+Each project is a self-contained directory (policy, algorithm, data record, config, train entry point). All were added with **zero changes to core code**. At startup, Manager validates the three-way contract between DataRecord, Policy, and Algorithm — mismatched keys fail immediately with a clear error, not minutes into training.
