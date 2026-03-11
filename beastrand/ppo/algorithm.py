@@ -73,22 +73,33 @@ class PPOAlgorithm:
         stats["learning_rate"] = self.opt["opt"].param_groups[0]["lr"]
         return stats
 
-    def save_checkpoint(self, save_dir: str, policy: nn.Module) -> None:
-        """Save policy weights and ONNX actor."""
-        os.makedirs(save_dir, exist_ok=True)
+    def save_checkpoint(self, save_dir: str, policy: nn.Module, env_step: int) -> str:
+        """Save full training state and ONNX actor. Returns checkpoint path."""
+        ckpt_dir = os.path.join(save_dir, "checkpoints")
+        os.makedirs(ckpt_dir, exist_ok=True)
 
-        # 1. Policy state dict
-        policy_path = os.path.join(save_dir, "policy.pt")
-        torch.save(policy.state_dict(), policy_path)
-        logging.info("saved policy to %s", policy_path)
+        # 1. Full training state → versioned checkpoint file
+        ckpt_path = os.path.join(ckpt_dir, f"ckpt_step_{env_step:08d}.pt")
+        ckpt: dict = {
+            "policy": policy.state_dict(),
+            "opt": {k: v.state_dict() for k, v in self.opt.items()},
+            "env_step": env_step,
+            "lr_update_count": self._lr_update_count,
+        }
+        if self.returns_rms is not None:
+            ckpt["returns_rms"] = {
+                "mean": float(self.returns_rms.mean),
+                "var": float(self.returns_rms.var),
+                "count": float(self.returns_rms.count),
+            }
+        torch.save(ckpt, ckpt_path)
+        logging.info("saved checkpoint to %s", ckpt_path)
 
-        # 2. ONNX export (actor only: body → deterministic action, single file)
+        # 2. ONNX export (actor only: body → deterministic action, always overwrite latest)
         try:
             if hasattr(policy.dist_head, "mean"):
-                # Continuous: body → mean linear layer
                 action_head = policy.dist_head.mean
             elif hasattr(policy.dist_head, "logits"):
-                # Discrete: body → logits linear layer
                 action_head = policy.dist_head.logits
             else:
                 raise AttributeError("Unknown dist_head type for ONNX export")
@@ -109,6 +120,40 @@ class PPOAlgorithm:
             logging.info("saved ONNX actor to %s", onnx_path)
         except Exception:
             logging.exception("ONNX export failed")
+
+        return ckpt_path
+
+    def load_checkpoint(self, ckpt_path: str, policy: nn.Module) -> int:
+        """Load full training state. Returns env_step.
+
+        SF-style partial override: learning_rate in args is applied to the
+        optimizer after loading, so CLI overrides take effect on resume.
+        """
+        ckpt = torch.load(ckpt_path, map_location=self.device)
+
+        policy.load_state_dict(ckpt["policy"])
+        logging.info("loaded policy from %s", ckpt_path)
+
+        for k, state in ckpt.get("opt", {}).items():
+            if k in self.opt:
+                self.opt[k].load_state_dict(state)
+
+        # SF-style partial override: re-apply current args LR to optimizer
+        for pg in self.opt["opt"].param_groups:
+            pg["lr"] = self.ctx.args.learning_rate
+        self._initial_lr = self.ctx.args.learning_rate
+
+        self._lr_update_count = ckpt.get("lr_update_count", 0)
+
+        if self.returns_rms is not None and "returns_rms" in ckpt:
+            rms = ckpt["returns_rms"]
+            self.returns_rms.mean = rms["mean"]
+            self.returns_rms.var = rms["var"]
+            self.returns_rms.count = rms["count"]
+
+        env_step = ckpt.get("env_step", 0)
+        logging.info("resumed from env_step=%d", env_step)
+        return env_step
 
 
 

@@ -60,6 +60,8 @@ class Args:
     run_name: Optional[str] = field(default=None, metadata={"help": "Override run name; default: env + timestamp"})
     eval_interval: int = field(default=10_000, metadata={"help": "Eval every N env steps"})
     checkpoint_interval: int = field(default=0, metadata={"help": "Save checkpoint every N env steps (0 = only on exit)"})
+    resume: Optional[str] = field(default=None, metadata={"help": "Path to checkpoint file to resume from (e.g. train_logs/run/checkpoints/ckpt_step_00500000.pt)"})
+    max_checkpoints: int = field(default=5, metadata={"help": "Max number of checkpoints to keep (0 = unlimited)"})
 
     # ---- helpers ----
     def make_run_name(self) -> str:

@@ -54,6 +54,17 @@ def main(ctx, logger_queue) -> None:
     # Immediately push our (possibly re-initialized) weights back
     param_server.update(policy)
 
+    # --- Resume from checkpoint ---
+    resume_path = getattr(args, "resume", None)
+    if resume_path:
+        if hasattr(algorithm, "load_checkpoint"):
+            resume_step = algorithm.load_checkpoint(resume_path, policy)
+            ctx.global_step.value = resume_step
+            param_server.update(policy)
+            logging.info("[learner] resumed from %s (env_step=%d)", resume_path, resume_step)
+        else:
+            logging.warning("[learner] algorithm has no load_checkpoint; ignoring --resume")
+
     # --- ZMQ (only filled_in for receiving filled traj IDs) ---
     bus = StrandBus()
     base = ctx.ipc_dir
@@ -221,15 +232,31 @@ def main(ctx, logger_queue) -> None:
     _ckpt_version_interval = max(1, _ckpt_interval // batch_size) if _ckpt_interval > 0 else 0
     _last_ckpt_version = 0
     _save_dir = os.path.join(getattr(args, "logdir", "train_logs"), ctx.run_name)
+    _max_ckpts = getattr(args, "max_checkpoints", 5)
 
-    def _save_checkpoint(version: int) -> None:
+    def _prune_checkpoints() -> None:
+        if _max_ckpts <= 0:
+            return
+        ckpt_dir = os.path.join(_save_dir, "checkpoints")
+        if not os.path.isdir(ckpt_dir):
+            return
+        files = sorted(f for f in os.listdir(ckpt_dir) if f.startswith("ckpt_step_") and f.endswith(".pt"))
+        while len(files) > _max_ckpts:
+            old = os.path.join(ckpt_dir, files.pop(0))
+            try:
+                os.remove(old)
+                logging.info("[learner] removed old checkpoint %s", old)
+            except OSError:
+                pass
+
+    def _save_checkpoint(env_step: int) -> None:
         if not hasattr(algorithm, "save_checkpoint"):
             return
         try:
-            algorithm.save_checkpoint(_save_dir, policy)
-            logging.info("[learner] periodic checkpoint saved (version=%d)", version)
+            algorithm.save_checkpoint(_save_dir, policy, env_step)
+            _prune_checkpoints()
         except Exception:
-            logging.exception("[learner] periodic checkpoint failed")
+            logging.exception("[learner] checkpoint failed")
 
     # ------------------------------------------------------------------
     # Training loop
@@ -286,7 +313,7 @@ def main(ctx, logger_queue) -> None:
 
             # --- Periodic checkpoint ---
             if _ckpt_version_interval > 0 and version - _last_ckpt_version >= _ckpt_version_interval:
-                _save_checkpoint(version)
+                _save_checkpoint(ctx.global_step.value)
                 _last_ckpt_version = version
 
             # --- Logging ---
@@ -308,7 +335,7 @@ def main(ctx, logger_queue) -> None:
         ing_thread.join(timeout=5.0)
 
         # Save final checkpoint on exit (if algorithm supports it)
-        _save_checkpoint(int(buffer_mgr.policy_version.item()))
+        _save_checkpoint(ctx.global_step.value)
 
         bus.close_all()
         logging.info("[learner] exiting")

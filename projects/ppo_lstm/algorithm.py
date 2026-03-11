@@ -50,14 +50,27 @@ class PPOLSTMAlgorithm:
         stats["learning_rate"] = self.opt["opt"].param_groups[0]["lr"]
         return stats
 
-    def save_checkpoint(self, save_dir: str, policy: nn.Module) -> None:
-        """Save policy weights (ONNX export not supported for LSTM policies)."""
-        os.makedirs(save_dir, exist_ok=True)
+    def save_checkpoint(self, save_dir: str, policy: nn.Module, env_step: int) -> str:
+        """Save full training state. ONNX export not supported for LSTM policies. Returns checkpoint path."""
+        ckpt_dir = os.path.join(save_dir, "checkpoints")
+        os.makedirs(ckpt_dir, exist_ok=True)
 
-        policy_path = os.path.join(save_dir, "policy.pt")
-        torch.save(policy.state_dict(), policy_path)
-        logging.info("saved policy to %s", policy_path)
-        logging.info("ONNX export skipped for LSTM policy (not supported)")
+        ckpt_path = os.path.join(ckpt_dir, f"ckpt_step_{env_step:08d}.pt")
+        ckpt: dict = {
+            "policy": policy.state_dict(),
+            "opt": {k: v.state_dict() for k, v in self.opt.items()},
+            "env_step": env_step,
+            "lr_update_count": self._lr_update_count,
+        }
+        if self.returns_rms is not None:
+            ckpt["returns_rms"] = {
+                "mean": float(self.returns_rms.mean),
+                "var": float(self.returns_rms.var),
+                "count": float(self.returns_rms.count),
+            }
+        torch.save(ckpt, ckpt_path)
+        logging.info("saved checkpoint to %s (ONNX export skipped for LSTM)", ckpt_path)
+        return ckpt_path
 
 
 def _validate_recurrence(ctx, N: int) -> int:

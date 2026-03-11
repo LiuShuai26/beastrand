@@ -418,33 +418,34 @@ class PPOAMPAlgorithm:
     # Checkpoint saving (called by Learner on exit)
     # ------------------------------------------------------------------
 
-    def save_checkpoint(self, save_dir: str, policy: nn.Module) -> None:
-        """Save policy weights, discriminator weights, and ONNX actor."""
+    def save_checkpoint(self, save_dir: str, policy: nn.Module, env_step: int) -> str:
+        """Save full training state (policy, discriminator, AMP stats) and ONNX actor. Returns checkpoint path."""
         import os
-        os.makedirs(save_dir, exist_ok=True)
+        ckpt_dir = os.path.join(save_dir, "checkpoints")
+        os.makedirs(ckpt_dir, exist_ok=True)
 
-        # 1. Policy state dict
-        policy_path = os.path.join(save_dir, "policy.pt")
-        torch.save(policy.state_dict(), policy_path)
-        logging.info("saved policy to %s", policy_path)
-
-        # 2. Discriminator + optimizer state
-        disc_path = os.path.join(save_dir, "discriminator.pt")
-        torch.save({
+        # 1. Full training state → versioned checkpoint file
+        ckpt_path = os.path.join(ckpt_dir, f"ckpt_step_{env_step:08d}.pt")
+        ckpt: dict = {
+            "policy": policy.state_dict(),
+            "opt": {k: v.state_dict() for k, v in self.opt.items()},
+            "env_step": env_step,
+            "lr_update_count": self._lr_update_count,
             "discriminator": self.discriminator.state_dict(),
             "disc_optimizer": self.disc_optimizer.state_dict(),
-        }, disc_path)
-        logging.info("saved discriminator to %s", disc_path)
+            "amp_obs_mean": self.motion_buffer.obs_mean,
+            "amp_obs_std": self.motion_buffer.obs_std,
+        }
+        if self.returns_rms is not None:
+            ckpt["returns_rms"] = {
+                "mean": float(self.returns_rms.mean),
+                "var": float(self.returns_rms.var),
+                "count": float(self.returns_rms.count),
+            }
+        torch.save(ckpt, ckpt_path)
+        logging.info("saved checkpoint to %s", ckpt_path)
 
-        # 3. Motion buffer normalization stats
-        stats_path = os.path.join(save_dir, "amp_stats.pt")
-        torch.save({
-            "obs_mean": self.motion_buffer.obs_mean,
-            "obs_std": self.motion_buffer.obs_std,
-        }, stats_path)
-        logging.info("saved AMP stats to %s", stats_path)
-
-        # 4. ONNX export (actor only: body → mean action, single file)
+        # 2. ONNX export (actor only: body → mean action, always overwrite latest)
         try:
             actor = ActorForExport(policy.body, policy.dist_head.mean)
             actor.eval()
@@ -464,29 +465,40 @@ class PPOAMPAlgorithm:
         except Exception:
             logging.exception("ONNX export failed")
 
+        return ckpt_path
 
-    def load_checkpoint(self, save_dir: str, policy: nn.Module) -> None:
-        """Load policy weights, discriminator weights, and optimizer state."""
-        import os
+    def load_checkpoint(self, ckpt_path: str, policy: nn.Module) -> int:
+        """Load full training state. Returns env_step."""
+        ckpt = torch.load(ckpt_path, map_location=self.device)
 
-        # 1. Policy
-        policy_path = os.path.join(save_dir, "policy.pt")
-        if os.path.exists(policy_path):
-            policy.load_state_dict(torch.load(policy_path, map_location=self.device))
-            logging.info("loaded policy from %s", policy_path)
+        policy.load_state_dict(ckpt["policy"])
+        logging.info("loaded policy from %s", ckpt_path)
 
-        # 2. Discriminator + optimizer
-        disc_path = os.path.join(save_dir, "discriminator.pt")
-        if os.path.exists(disc_path):
-            checkpoint = torch.load(disc_path, map_location=self.device)
-            if isinstance(checkpoint, dict) and "discriminator" in checkpoint:
-                self.discriminator.load_state_dict(checkpoint["discriminator"])
-                if "disc_optimizer" in checkpoint:
-                    self.disc_optimizer.load_state_dict(checkpoint["disc_optimizer"])
-            else:
-                # Legacy format: bare state_dict
-                self.discriminator.load_state_dict(checkpoint)
-            logging.info("loaded discriminator from %s", disc_path)
+        for k, state in ckpt.get("opt", {}).items():
+            if k in self.opt:
+                self.opt[k].load_state_dict(state)
+
+        # SF-style partial override: re-apply current args LR
+        for pg in self.opt["opt"].param_groups:
+            pg["lr"] = self.ctx.args.learning_rate
+        self._initial_lr = self.ctx.args.learning_rate
+
+        self._lr_update_count = ckpt.get("lr_update_count", 0)
+
+        if self.returns_rms is not None and "returns_rms" in ckpt:
+            rms = ckpt["returns_rms"]
+            self.returns_rms.mean = rms["mean"]
+            self.returns_rms.var = rms["var"]
+            self.returns_rms.count = rms["count"]
+
+        if "discriminator" in ckpt:
+            self.discriminator.load_state_dict(ckpt["discriminator"])
+        if "disc_optimizer" in ckpt:
+            self.disc_optimizer.load_state_dict(ckpt["disc_optimizer"])
+
+        env_step = ckpt.get("env_step", 0)
+        logging.info("resumed from env_step=%d", env_step)
+        return env_step
 
 
 
