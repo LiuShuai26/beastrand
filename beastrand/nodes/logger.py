@@ -37,6 +37,8 @@ def start_logger(
     flush_every: float = 2.0,
     batch_write_max: int = 10_000,
     start_method: str = "spawn",
+    wandb_project: Optional[str] = None,
+    wandb_config: Optional[dict] = None,
 ) -> None:
     """Start one writer process and the shared queue in the PARENT process."""
     global _queue, _proc, _started
@@ -47,7 +49,8 @@ def start_logger(
     _queue = ctx.Queue(maxsize=qsize)
     _proc = ctx.Process(
         target=_logger_process,
-        args=(_queue, logdir, experiment_name, float(flush_every), int(batch_write_max)),
+        args=(_queue, logdir, experiment_name, float(flush_every), int(batch_write_max),
+              wandb_project, wandb_config),
         daemon=True,
     )
     _proc.start()
@@ -102,7 +105,9 @@ def stop_logger(join_timeout: float = 2.5) -> None:
     _proc = None
     _queue = None
 
-def _logger_process(queue, logdir: str, experiment_name: str, flush_every: float, batch_write_max: int):
+def _logger_process(queue, logdir: str, experiment_name: str, flush_every: float,
+                    batch_write_max: int, wandb_project: Optional[str] = None,
+                    wandb_config: Optional[dict] = None):
     import signal, time
     try: signal.signal(signal.SIGINT, signal.SIG_IGN)
     except Exception: pass
@@ -110,6 +115,32 @@ def _logger_process(queue, logdir: str, experiment_name: str, flush_every: float
     writer = SummaryWriter(log_dir=f"{logdir}/{experiment_name}", flush_secs=int(max(1, flush_every)))
     last_flush = time.time()
     stopping = False
+
+    # Optional W&B init
+    _wandb = None
+    if wandb_project:
+        try:
+            import wandb
+            wandb.init(
+                project=wandb_project,
+                name=experiment_name,
+                config=wandb_config or {},
+                resume="allow",
+            )
+            _wandb = wandb
+        except Exception as e:
+            import sys
+            print(f"[logger] W&B init failed: {e}", file=sys.stderr)
+
+    def _write_scalar(m: _MsgScalar) -> None:
+        wt = m.wall_time if m.wall_time is not None else time.time()
+        namespaced_tag = f"{m.run}/{m.tag}" if m.run else m.tag
+        writer.add_scalar(namespaced_tag, float(m.value), m.step, walltime=wt)
+        if _wandb is not None:
+            try:
+                _wandb.log({namespaced_tag: float(m.value)}, step=int(m.step))
+            except Exception:
+                pass
 
     try:
         while True:
@@ -136,10 +167,7 @@ def _logger_process(queue, logdir: str, experiment_name: str, flush_every: float
                         last_flush = time.time()
                         continue
                     if isinstance(m, _MsgScalar):
-                        wt = m.wall_time if m.wall_time is not None else time.time()
-                        # single writer: namespace via run/
-                        namespaced_tag = f"{m.run}/{m.tag}" if m.run else m.tag
-                        writer.add_scalar(namespaced_tag, float(m.value), m.step, walltime=wt)
+                        _write_scalar(m)
 
             now = time.time()
             if now - last_flush >= flush_every:
@@ -154,7 +182,7 @@ def _logger_process(queue, logdir: str, experiment_name: str, flush_every: float
                     except Exception:
                         break
                     if isinstance(m, _MsgScalar):
-                        writer.add_scalar(f"{m.run}/{m.tag}", float(m.value), m.step, walltime=time.time())
+                        _write_scalar(m)
                 break
     finally:
         try:
@@ -162,3 +190,8 @@ def _logger_process(queue, logdir: str, experiment_name: str, flush_every: float
             writer.close()
         except Exception:
             pass
+        if _wandb is not None:
+            try:
+                _wandb.finish()
+            except Exception:
+                pass

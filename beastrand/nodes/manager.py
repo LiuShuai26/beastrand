@@ -99,7 +99,7 @@ class Shared:
         self.run_name = getattr(args, "run_name", None) or f"{args.env_id}_{int(_now_s())}"
         self.start_time = _now_s()
         self.stop_event = mp.Event()
-        self.global_step = mp.Value("i", 0)
+        self.global_step = mp.Value("l", 0)  # int64: avoids overflow beyond ~2B steps
 
         # Unique IPC directory for this run (avoids collisions between concurrent runs)
         self.ipc_dir = f"ipc:///tmp/beatstrand/{self.run_name}"
@@ -165,12 +165,14 @@ class Manager:
     # Launch
     # ------------------------------------------------------------------
 
-    def launch(self) -> None:
+    def launch(self, wandb_config: Optional[dict] = None) -> None:
         start_logger(
             logdir=getattr(self.args, "logdir", "train_logs"),
             experiment_name=self.ctx.run_name,
             queue_maxsize=30000,
             flush_every=2.0,
+            wandb_project=getattr(self.args, "wandb_project", None),
+            wandb_config=wandb_config,
         )
 
         # 1. Probe env
@@ -250,12 +252,77 @@ class Manager:
         logging.info("All %d nodes spawned", len(self.procs))
 
     # ------------------------------------------------------------------
+    # Eval
+    # ------------------------------------------------------------------
+
+    def _run_eval(self) -> Optional[float]:
+        """Run eval episodes with the latest policy weights. Returns mean episode reward."""
+        from beastrand.utils.model_sharing import _load_state_into_model
+        from beastrand.core.envs.make_env import make_env as _default_make_env
+
+        n_episodes = getattr(self.args, "num_eval_episodes", 10)
+        try:
+            policy_cls = get_object_from_path(self.args.policy_path)
+            device = torch.device("cpu")
+            policy = policy_cls(self.ctx).to(device)
+            _load_state_into_model(self.ctx.param_server.shared_state, policy)
+            policy.eval()
+
+            _mep = getattr(self.args, "make_env_path", None)
+            _make_env = get_object_from_path(_mep) if _mep else _default_make_env
+
+            rewards = []
+            for ep in range(n_episodes):
+                env = _make_env(self.args.env_id, seed=9999 + ep, args=self.args)
+                obs, _ = env.reset(seed=9999 + ep)
+                ep_reward = 0.0
+                done = False
+                steps = 0
+                while not done and steps < 10_000:
+                    obs_t = torch.from_numpy(np.asarray(obs, dtype=np.float32)).unsqueeze(0)
+                    with torch.no_grad():
+                        out = policy.act({"obs": obs_t})
+                    action = out["action"][0]
+                    if self.ctx.act_kind == "discrete":
+                        action = int(action.item())
+                    else:
+                        action = action.cpu().numpy()
+                    obs, reward, term, trunc, _ = env.step(action)
+                    ep_reward += float(reward)
+                    done = bool(term or trunc)
+                    steps += 1
+                rewards.append(ep_reward)
+                env.close()
+
+            return float(np.mean(rewards))
+        except Exception:
+            logging.exception("[manager] eval failed")
+            return None
+
+    # ------------------------------------------------------------------
     # Run until target steps or crash
     # ------------------------------------------------------------------
 
     def run_until_complete(self) -> None:
+        import threading
+        from beastrand.nodes.logger import log_scalar
+
         target_steps = self.args.total_env_steps
         logging.info("Target env steps: %d", target_steps)
+
+        eval_interval = getattr(self.args, "eval_interval", 0)
+        _last_eval_step = 0
+        _eval_thread: Optional[threading.Thread] = None
+        _eval_results: list = []  # [(step, mean_reward)] written by eval thread
+
+        def _launch_eval(step: int) -> None:
+            def _worker():
+                result = self._run_eval()
+                if result is not None:
+                    _eval_results.append((step, result))
+            t = threading.Thread(target=_worker, daemon=True)
+            t.start()
+            return t
 
         def handle_sig(sig, frame):
             logging.warning("Received signal %s — requesting shutdown...", sig)
@@ -286,6 +353,21 @@ class Manager:
                         len(self.procs),
                     )
                     last_log = _now_s()
+
+                # Periodic eval (background thread — does not block monitoring loop)
+                if eval_interval > 0:
+                    step = self.ctx.global_step.value
+                    if step - _last_eval_step >= eval_interval:
+                        if _eval_thread is None or not _eval_thread.is_alive():
+                            _last_eval_step = step
+                            _eval_thread = _launch_eval(step)
+
+                # Log any completed eval results
+                while _eval_results:
+                    eval_step, mean_reward = _eval_results.pop(0)
+                    n = getattr(self.args, "num_eval_episodes", 10)
+                    log_scalar(run="eval", tag="episode_reward_mean", value=mean_reward, step=eval_step)
+                    logging.info("[eval] step=%d mean_reward=%.2f (%d episodes)", eval_step, mean_reward, n)
 
                 time.sleep(0.5)
         finally:

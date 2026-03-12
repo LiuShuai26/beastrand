@@ -253,8 +253,14 @@ def main(ctx, logger_queue) -> None:
         if not hasattr(algorithm, "save_checkpoint"):
             return
         try:
-            algorithm.save_checkpoint(_save_dir, policy, env_step)
+            ckpt_path = algorithm.save_checkpoint(_save_dir, policy, env_step)
             _prune_checkpoints()
+            # Update latest.pt symlink — stable path for crash recovery / resume
+            ckpt_dir = os.path.join(_save_dir, "checkpoints")
+            latest_link = os.path.join(ckpt_dir, "latest.pt")
+            if os.path.lexists(latest_link):
+                os.remove(latest_link)
+            os.symlink(os.path.basename(ckpt_path), latest_link)
         except Exception:
             logging.exception("[learner] checkpoint failed")
 
@@ -316,16 +322,18 @@ def main(ctx, logger_queue) -> None:
                 _save_checkpoint(ctx.global_step.value)
                 _last_ckpt_version = version
 
-            # --- Logging ---
-            log_scalar(run="learner", tag="policy_lag", value=policy_lag, step=version)
-            log_scalar(run="learner", tag="wait_for_data_ms", value=wait_ms, step=version)
-            log_scalar(run="learner", tag="build_batch_ms", value=build_batch_ms, step=version)
-            log_scalar(run="learner", tag="update_ms", value=update_ms, step=version)
-            log_scalar(run="learner", tag="weight_sync_ms", value=weight_sync_ms, step=version)
-            log_scalar(run="learner", tag="total_iter_ms", value=total_ms, step=version)
+            # --- Logging (x-axis = env steps for alignment with actor metrics) ---
+            env_step = int(ctx.global_step.value)
+            log_scalar(run="learner", tag="policy_version", value=version, step=env_step)
+            log_scalar(run="learner", tag="policy_lag", value=policy_lag, step=env_step)
+            log_scalar(run="learner", tag="wait_for_data_ms", value=wait_ms, step=env_step)
+            log_scalar(run="learner", tag="build_batch_ms", value=build_batch_ms, step=env_step)
+            log_scalar(run="learner", tag="update_ms", value=update_ms, step=env_step)
+            log_scalar(run="learner", tag="weight_sync_ms", value=weight_sync_ms, step=env_step)
+            log_scalar(run="learner", tag="total_iter_ms", value=total_ms, step=env_step)
             for k, v in stats.items():
                 try:
-                    log_scalar(run="learner", tag=k, value=float(v), step=version)
+                    log_scalar(run="learner", tag=k, value=float(v), step=env_step)
                 except Exception:
                     pass
 

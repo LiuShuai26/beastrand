@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import dataclasses
+import json
 import logging
 import os
 from typing import Optional
@@ -41,10 +43,17 @@ def main(argv: Optional[list[str]] = None) -> None:
 
     setup_logging(args.logdir, run_name)
 
+    # Save config to disk for reproducibility / resume inspection
+    _cfg_dir = os.path.join(args.logdir, run_name)
+    os.makedirs(_cfg_dir, exist_ok=True)
+    _cfg_path = os.path.join(_cfg_dir, "config.json")
+    with open(_cfg_path, "w") as _f:
+        json.dump(dataclasses.asdict(args), _f, indent=2, default=str)
+
     logging.info("Args: %s", args)
 
     mgr = Manager(args)
-    mgr.launch()
+    mgr.launch(wandb_config=dataclasses.asdict(args))
     mgr.run_until_complete()
 
 

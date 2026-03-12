@@ -92,6 +92,18 @@ class PPOAMPAlgorithm:
         # Thread lock: discriminator is read in ingest thread, written in main thread
         self._disc_lock = threading.Lock()
 
+        # LR schedule (mirrors PPOAlgorithm)
+        self._initial_lr = args.learning_rate
+        self._lr_schedule = getattr(args, "lr_schedule", "constant")
+        self._lr_update_count = 0
+        self._lr_total_updates = max(1, args.total_env_steps // args.batch_size)
+
+        # Returns normalization (mirrors PPOAlgorithm)
+        self.returns_rms = None
+        if getattr(args, "normalize_returns", False):
+            from beastrand.core.running_mean_std import RunningMeanStd
+            self.returns_rms = RunningMeanStd()
+
     # ------------------------------------------------------------------
     # AMP feature extraction
     # ------------------------------------------------------------------

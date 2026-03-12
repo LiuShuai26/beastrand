@@ -101,11 +101,14 @@ class RolloutWorker:
             self.bus.sockets["infer_req"].connect(f"{base}/infer_{i}.req")
         self.bus.open("filled_out", mode="push", endpoint=f"{base}/data.filled.in", bind=False)
 
-        # --- Profiling & stats (only worker 0) ---
+        # --- Profiling (only worker 0) & episode stats (all workers) ---
         self.prof = ProfileAccum(interval=5.0) if worker_idx == 0 else None
-        self._recent_rewards: deque = deque(maxlen=100) if worker_idx == 0 else None
-        self._recent_lengths: deque = deque(maxlen=100) if worker_idx == 0 else None
+        self._recent_rewards: deque = deque(maxlen=100)
+        self._recent_lengths: deque = deque(maxlen=100)
         self._last_summary_time: float = 0.0
+        # Recent FPS window (worker 0 only)
+        self._fps_last_step: int = 0
+        self._fps_last_time: float = 0.0
 
         # --- Resolve env factory (configurable via args.make_env_path) ---
         _make_env_path = getattr(args, "make_env_path", None)
@@ -259,16 +262,13 @@ class RolloutWorker:
         es.done = done
 
         if done:
-            if self.worker_idx == 0:
-                step = int(self.ctx.global_step.value)
-                raw_reward = es.episode_reward
-                if info and "episode" in info:
-                    raw_reward = float(info["episode"]["r"])
-                self._recent_rewards.append(raw_reward)
-                self._recent_lengths.append(es.episode_length)
-                log_scalar(run="actor", tag="episode_reward", value=raw_reward, step=step)
-                log_scalar(run="actor", tag="episode_length", value=es.episode_length, step=step)
-                self._maybe_log_summary(step)
+            step = int(self.ctx.global_step.value)
+            raw_reward = es.episode_reward
+            if info and "episode" in info:
+                raw_reward = float(info["episode"]["r"])
+            self._recent_rewards.append(raw_reward)
+            self._recent_lengths.append(es.episode_length)
+            self._maybe_log_summary(step)
 
             next_obs, _ = es.env.reset()
             es.episode_reward = 0.0
@@ -288,7 +288,7 @@ class RolloutWorker:
             self._finalize_trajectory(es)
 
     def _maybe_log_summary(self, step: int) -> None:
-        """Print aggregated episode stats periodically (worker 0 only)."""
+        """Print aggregated episode stats periodically. Only worker 0 writes to TensorBoard."""
         now = time.time()
         if now - self._last_summary_time < 5.0:
             return
@@ -299,7 +299,9 @@ class RolloutWorker:
         avg_l = sum(self._recent_lengths) / n
         logging.info("avg_reward=%.2f avg_length=%.0f episodes=%d steps=%d",
                      avg_r, avg_l, n, step)
-        log_scalar(run="actor", tag="avg_reward", value=avg_r, step=step)
+        if self.worker_idx == 0:
+            log_scalar(run="actor", tag="avg_reward", value=avg_r, step=step)
+            log_scalar(run="actor", tag="avg_ep_length", value=avg_l, step=step)
         self._last_summary_time = now
 
     # ------------------------------------------------------------------
@@ -338,10 +340,19 @@ class RolloutWorker:
 
         if self.worker_idx == 0:
             step = int(self.ctx.global_step.value)
-            elapsed = time.time() - self.ctx.start_time
+            now = time.time()
+            elapsed = now - self.ctx.start_time
             log_scalar(run="actor", tag="steps", value=step, step=step)
             if elapsed > 0:
                 log_scalar(run="actor", tag="fps", value=step / elapsed, step=step)
+            # Recent FPS over the last window (more responsive than total average)
+            if self._fps_last_time > 0:
+                dt = now - self._fps_last_time
+                if dt > 0:
+                    recent_fps = (step - self._fps_last_step) / dt
+                    log_scalar(run="actor", tag="fps_recent", value=recent_fps, step=step)
+            self._fps_last_step = step
+            self._fps_last_time = now
 
         # Advance to next split
         next_split = (split_idx + 1) % self.split_depth
