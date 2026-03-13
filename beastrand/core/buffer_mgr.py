@@ -116,7 +116,9 @@ class BufferMgr:
         self.infer_act.share_memory_()
         self.infer_logp = torch.zeros(WE)
         self.infer_logp.share_memory_()
-        self.infer_val = torch.zeros(WE)
+        # Match value shape from traj_tensors (may have trailing dims beyond scalar).
+        val_trailing = self.traj_tensors["value"].shape[2:]
+        self.infer_val = torch.zeros(WE, *val_trailing)
         self.infer_val.share_memory_()
         # mask used only for LSTM (non-LSTM code ignores it)
         self.infer_mask = torch.zeros(WE)
