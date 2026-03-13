@@ -21,7 +21,11 @@ def _configure_from_so(args: Args) -> None:
         if hasattr(env_module, "amp_obs_slices"):
             args.amp_obs_slices = [tuple(s) for s in env_module.amp_obs_slices()]
             args.amp_obs_dim = sum(e - s for s, e in args.amp_obs_slices)
+        print(f"[_configure_from_so] brain_class={args.brain_class}, "
+              f"amp_obs_slices={args.amp_obs_slices}, amp_obs_dim={args.amp_obs_dim}")
     except (ImportError, ModuleNotFoundError):
+        print(f"[_configure_from_so] .so not found, using config defaults: "
+              f"amp_obs_slices={args.amp_obs_slices}, amp_obs_dim={args.amp_obs_dim}")
         pass  # Not a Beast env, use config defaults
 
 

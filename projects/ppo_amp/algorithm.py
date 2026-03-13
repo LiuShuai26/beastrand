@@ -134,6 +134,11 @@ class PPOAMPAlgorithm:
         arrays = view
         obs_np = arrays["obs"]  # (T+1, obs_dim)
         amp_obs_full = self._extract_amp_obs(obs_np)  # (T+1, amp_obs_dim)
+        assert amp_obs_full.shape[-1] == self.amp_obs_dim, (
+            f"AMP feature dim mismatch: extracted {amp_obs_full.shape[-1]} "
+            f"from obs_dim={obs_np.shape[-1]}, slices={self.amp_obs_slices}, "
+            f"expected {self.amp_obs_dim}"
+        )
         transitions = np.concatenate(
             [amp_obs_full[:-1], amp_obs_full[1:]], axis=-1,
         )  # (T, 2*amp_obs_dim)

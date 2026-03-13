@@ -30,7 +30,7 @@ class Args:
     total_env_steps: int = field(default=50_000_000, metadata={"help": "Total environment steps"})
 
     # --- Beast .so env config ---
-    brain_class: str = field(default="VAEBrain", metadata={"help": "Brain class: Brain or VAEBrain"})
+    brain_class: str = field(default="Brain", metadata={"help": "Brain class: Brain or VAEBrain"})
     reward_mode: str = field(default="idle", metadata={"help": "Reward mode: idle, walk, or punch"})
     target_vx: float = field(default=1.5, metadata={"help": "Target forward velocity for walk mode"})
 
