@@ -34,6 +34,13 @@ class Args:
     reward_mode: str = field(default="idle", metadata={"help": "Reward mode: idle, walk, or punch"})
     target_vx: float = field(default=1.5, metadata={"help": "Target forward velocity for walk mode"})
 
+    # --- Perturbation (random pushes during training) ---
+    perturbation: bool = field(default=False, metadata={"help": "Enable random perturbation pushes"})
+    perturb_min_impulse: float = field(default=1.0, metadata={"help": "Min perturbation impulse"})
+    perturb_max_impulse: float = field(default=5.0, metadata={"help": "Max perturbation impulse"})
+    perturb_min_interval: int = field(default=60, metadata={"help": "Min steps between perturbations"})
+    perturb_max_interval: int = field(default=180, metadata={"help": "Max steps between perturbations"})
+
     max_policy_lag: int = field(default=0, metadata={"help": "Discard trajectories with policy lag > this (0 = disabled)"})
 
     # --- Topology ---

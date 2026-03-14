@@ -168,7 +168,24 @@ def _try_beast_env(env_id: str, *, args=None):
         EnvClass = getattr(env_module, env_id)
         env = BeastGymWrapper(EnvClass())
 
-        # 4. Store obs layout metadata from .so (for Python-side auto-detection)
+        # 4. Configure perturbation (sets Brain:: statics via instance method)
+        if args is not None and getattr(args, "perturbation", False):
+            raw_env = env._env
+            if hasattr(raw_env, "set_perturbation_enabled"):
+                raw_env.set_perturbation_enabled(True)
+                raw_env.set_perturbation_strength(
+                    getattr(args, "perturb_min_impulse", 1.0),
+                    getattr(args, "perturb_max_impulse", 5.0),
+                )
+                raw_env.set_perturbation_interval(
+                    getattr(args, "perturb_min_interval", 60),
+                    getattr(args, "perturb_max_interval", 180),
+                )
+                logging.info("Perturbation enabled: impulse=[%.1f, %.1f], interval=[%d, %d]",
+                             args.perturb_min_impulse, args.perturb_max_impulse,
+                             args.perturb_min_interval, args.perturb_max_interval)
+
+        # 5. Store obs layout metadata from .so (for Python-side auto-detection)
         if hasattr(env_module, "observation_layout"):
             env.obs_layout = env_module.observation_layout()
         if hasattr(env_module, "amp_obs_slices"):
