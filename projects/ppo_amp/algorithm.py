@@ -69,8 +69,9 @@ class PPOAMPAlgorithm:
         include_angvel = (self.amp_obs_dim >= base_with_vel)
         include_phase = (self.amp_obs_dim == base_with_vel + 1   # 48 (vel+phase)
                          or self.amp_obs_dim == base_no_vel + 1)  # 36 (no vel+phase)
+        kf_files = [f.strip() for f in args.keyframe_file.split(",") if f.strip()]
         self.motion_buffer = AMPMotionBuffer(
-            keyframe_files=args.keyframe_file,
+            keyframe_files=kf_files,
             joint_order=JOINT_ORDER,
             body_order=BODY_ORDER,
             device=device,

@@ -139,7 +139,9 @@ def _configure_beast_statics(env_module, args) -> None:
 
     keyframe_file = getattr(args, "keyframe_file", "")
     if keyframe_file and hasattr(env_module, "set_keyframe_file"):
-        env_module.set_keyframe_file(str(Path(keyframe_file).resolve()))
+        # Comma-separated: pass first file to .so (C++ uses it for heuristic reference)
+        first_file = keyframe_file.split(",")[0].strip()
+        env_module.set_keyframe_file(str(Path(first_file).resolve()))
 
     if hasattr(env_module, "set_target_velocity"):
         target_vx = getattr(args, "target_vx", 1.5)

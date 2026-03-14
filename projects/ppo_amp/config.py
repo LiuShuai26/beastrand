@@ -69,7 +69,7 @@ class Args:
     normalize_adv: bool = field(default=True, metadata={"help": "Normalize advantages"})
 
     # --- AMP-specific ---
-    keyframe_file: str = field(default="", metadata={"help": "Path to keyframe JSON file (required for AMP)"})
+    keyframe_file: str = field(default="", metadata={"help": "Keyframe JSON file(s), comma-separated for multiple clips (required for AMP)"})
 
     amp_obs_slices: List[Tuple[int, int]] = field(
         default_factory=lambda: [(0, 1), (6, 30), (30, 42), (42, 52), (76, 77)],
@@ -93,6 +93,7 @@ class Args:
     run_name: Optional[str] = field(default=None, metadata={"help": "Override run name"})
     eval_interval: int = field(default=10_000, metadata={"help": "Eval every N env steps"})
     checkpoint_interval: int = field(default=5_000_000, metadata={"help": "Save checkpoint every N env steps (0 = only on exit)"})
+    resume: Optional[str] = field(default=None, metadata={"help": "Path to checkpoint .pt file to resume from"})
 
     # ---- helpers ----
     def make_run_name(self) -> str:
