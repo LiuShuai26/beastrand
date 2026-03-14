@@ -5,14 +5,20 @@ Loads keyframe JSON files and provides random sampling of (s_t, s_{t+1})
 transition pairs for discriminator training.
 
 Per-frame AMP state features (matching Brain.cpp observation layout):
-    [pelvis_y, joint_sin_cos(24), body_pos_pelvis_frame(10), phase(1)] = 36 dims
+    [pelvis_y(1), joint_sin_cos(24), joint_angvel(12),
+     body_pos_pelvis_frame(10), phase(1)] = 48 dims
 
 When the environment observation does not include a phase channel
-(e.g. VAEBrain, 35-dim AMP features), pass ``include_phase=False``
+(e.g. VAEBrain, 47-dim AMP features), pass ``include_phase=False``
 to drop the phase column so the buffer matches the policy's feature space.
+
+When ``include_angvel=False``, joint angular velocities are omitted,
+giving the original 36/35-dim layout.
 
 - Joints are stored as sin/cos pairs (not raw angles) to match the raw
   observation format and avoid lossy atan2 roundtrips.
+- Joint angular velocities are computed via finite differences between
+  consecutive keyframes: omega = (angle[t+1] - angle[t]) / dt.
 - Body positions are rotated into the pelvis local frame using the same
   transform as Brain.cpp:  dx*cos(-a) - dy*sin(-a), dx*sin(-a) + dy*cos(-a).
 - pelvis_x is excluded (horizontal translation invariance).
@@ -44,9 +50,11 @@ class AMPMotionBuffer:
         body_order:     Key body names in the order they appear in the observation.
                         Must match HumanoidConfig.h KEY_BODY_TAGS.
         device:         Torch device for pre-computed tensors.
+        include_phase:  Include phase channel in AMP features.
+        include_angvel: Include joint angular velocities in AMP features.
 
     Attributes:
-        obs_dim:        Dimensionality of a single-frame AMP state (35 or 36).
+        obs_dim:        Dimensionality of a single-frame AMP state.
         transition_dim: Dimensionality of a transition pair (obs_dim * 2).
     """
 
@@ -57,6 +65,7 @@ class AMPMotionBuffer:
         body_order,
         device="cpu",
         include_phase=True,
+        include_angvel=True,
     ):
         if isinstance(keyframe_files, str):
             keyframe_files = [keyframe_files]
@@ -67,8 +76,13 @@ class AMPMotionBuffer:
         self.num_joints = len(self.joint_order)
         self.num_bodies = len(self.body_order)
         self.include_phase = include_phase
-        # 1 (pelvis_y) + num_joints*2 (sin/cos) + num_bodies*2 (x/y) [+ 1 (phase)]
+        self.include_angvel = include_angvel
+
+        # Compute obs_dim:
+        # pelvis_y(1) + sin/cos(num_joints*2) + [angvel(num_joints)] + body_pos(num_bodies*2) + [phase(1)]
         base_dim = 1 + self.num_joints * 2 + self.num_bodies * 2
+        if include_angvel:
+            base_dim += self.num_joints
         self.obs_dim = base_dim + 1 if include_phase else base_dim
         self.transition_dim = self.obs_dim * 2
 
@@ -80,12 +94,35 @@ class AMPMotionBuffer:
                 data = json.load(f)
             keyframes = data["keyframes"]
             is_cyclic = data.get("is_cyclic", True)
+            dt = data.get("dt", 1.0 / 60.0)  # time step between frames
             clip_cyclic.append(is_cyclic)
 
             num_frames = len(keyframes)
+
+            # 1. Extract raw joint angles for angular velocity computation
+            raw_angles = np.zeros((num_frames, self.num_joints), dtype=np.float32)
+            for i, kf in enumerate(keyframes):
+                for j, jname in enumerate(self.joint_order):
+                    raw_angles[i, j] = kf.get(jname, 0.0)
+
+            # 2. Compute angular velocities via finite differences
+            if include_angvel:
+                angvel = np.zeros((num_frames, self.num_joints), dtype=np.float32)
+                for i in range(num_frames):
+                    if is_cyclic:
+                        i_next = (i + 1) % num_frames
+                    else:
+                        i_next = min(i + 1, num_frames - 1)
+                    angvel[i] = (raw_angles[i_next] - raw_angles[i]) / dt
+
+            # 3. Build per-frame AMP features
             clip = np.zeros((num_frames, self.obs_dim), dtype=np.float32)
             for i, kf in enumerate(keyframes):
-                base_feat = self._keyframe_to_amp(kf)
+                feat = self._keyframe_to_amp_base(kf)
+                if include_angvel:
+                    feat = np.concatenate([feat[:1 + self.num_joints * 2],
+                                           angvel[i],
+                                           feat[1 + self.num_joints * 2:]])
                 if include_phase:
                     if num_frames <= 1:
                         phase = 0.0
@@ -93,10 +130,10 @@ class AMPMotionBuffer:
                         phase = i / num_frames
                     else:
                         phase = i / (num_frames - 1)
-                    clip[i, :-1] = base_feat
+                    clip[i, :-1] = feat
                     clip[i, -1] = phase
                 else:
-                    clip[i] = base_feat
+                    clip[i] = feat
             clips.append(clip)
 
         # Build transition pairs per clip, then concatenate
@@ -131,16 +168,16 @@ class AMPMotionBuffer:
 
         logging.info(
             "AMPMotionBuffer: %d frames, %d transitions, "
-            "obs_dim=%d, transition_dim=%d",
+            "obs_dim=%d, transition_dim=%d, angvel=%s, phase=%s",
             total_frames, self.num_transitions, self.obs_dim, self.transition_dim,
+            include_angvel, include_phase,
         )
 
-    def _keyframe_to_amp(self, kf):
-        """Convert one keyframe dict to a base AMP state (without phase).
+    def _keyframe_to_amp_base(self, kf):
+        """Convert one keyframe dict to base AMP state (no angvel, no phase).
 
-        Returns a 35-dim array matching the Brain.cpp observation format:
-          [pelvis_y, sin(j0), cos(j0), ..., body0_lx, body0_ly, ...]
-        Phase (if included) is appended by the caller.
+        Returns array: [pelvis_y, sin(j0), cos(j0), ..., body0_lx, body0_ly, ...]
+        Angular velocity and phase are inserted/appended by the caller.
         """
         feat = []
 

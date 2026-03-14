@@ -72,7 +72,7 @@ class Args:
     keyframe_file: str = field(default="", metadata={"help": "Path to keyframe JSON file (required for AMP)"})
 
     amp_obs_slices: List[Tuple[int, int]] = field(
-        default_factory=lambda: [(0, 1), (6, 30), (42, 52), (76, 77)],
+        default_factory=lambda: [(0, 1), (6, 30), (30, 42), (42, 52), (76, 77)],
         metadata={"help": "Observation index slices for AMP features [(start, end), ...]"},
     )
     amp_obs_dim: int = field(default=0, metadata={"help": "AMP obs dimension (computed from slices)"})
