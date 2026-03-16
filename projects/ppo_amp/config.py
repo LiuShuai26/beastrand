@@ -72,13 +72,13 @@ class Args:
     keyframe_file: str = field(default="", metadata={"help": "Keyframe JSON file(s), comma-separated for multiple clips (required for AMP)"})
 
     amp_obs_slices: List[Tuple[int, int]] = field(
-        default_factory=lambda: [(0, 1), (6, 30), (30, 42), (42, 52), (76, 77)],
+        default_factory=lambda: [(0, 6), (6, 30), (30, 42), (42, 52)],
         metadata={"help": "Observation index slices for AMP features [(start, end), ...]"},
     )
     amp_obs_dim: int = field(default=0, metadata={"help": "AMP obs dimension (computed from slices)"})
 
-    task_reward_weight: float = field(default=0.1, metadata={"help": "Weight for task reward group"})
-    style_reward_weight: float = field(default=0.9, metadata={"help": "Weight for style reward group"})
+    task_reward_weight: float = field(default=0.5, metadata={"help": "Weight for task reward group"})
+    style_reward_weight: float = field(default=0.5, metadata={"help": "Weight for style reward group"})
 
     disc_lr: float = field(default=5e-4, metadata={"help": "Discriminator learning rate"})
     disc_hidden_dim: int = field(default=256, metadata={"help": "Discriminator hidden layer size"})

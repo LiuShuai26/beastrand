@@ -5,26 +5,19 @@ Loads keyframe JSON files and provides random sampling of (s_t, s_{t+1})
 transition pairs for discriminator training.
 
 Per-frame AMP state features (matching Brain.cpp observation layout):
-    [pelvis_y(1), joint_sin_cos(24), joint_angvel(12),
-     body_pos_pelvis_frame(10), phase(1)] = 48 dims
-
-When the environment observation does not include a phase channel
-(e.g. VAEBrain, 47-dim AMP features), pass ``include_phase=False``
-to drop the phase column so the buffer matches the policy's feature space.
-
-When ``include_angvel=False``, joint angular velocities are omitted,
-giving the original 36/35-dim layout.
+    [pelvis_y(1), pelvis_sincos(2), pelvis_vel(3),
+     joint_sin_cos(24), joint_angvel(12),
+     body_pos_pelvis_frame(10)] = 52 dims
 
 - Joints are stored as sin/cos pairs (not raw angles) to match the raw
   observation format and avoid lossy atan2 roundtrips.
 - Joint angular velocities are computed via finite differences between
   consecutive keyframes: omega = (angle[t+1] - angle[t]) / dt.
+- Pelvis velocity (vx, vy, angular_vel) computed via finite differences
+  of pelvis position and angle between consecutive frames.
 - Body positions are rotated into the pelvis local frame using the same
   transform as Brain.cpp:  dx*cos(-a) - dy*sin(-a), dx*sin(-a) + dy*cos(-a).
 - pelvis_x is excluded (horizontal translation invariance).
-- Phase is a scalar in [0,1] indicating position within the clip.
-  Cyclic clips: phase = frame_idx / num_frames (wraps).
-  Aperiodic clips: phase = frame_idx / (num_frames - 1) (clamped).
 """
 
 import json
@@ -50,8 +43,6 @@ class AMPMotionBuffer:
         body_order:     Key body names in the order they appear in the observation.
                         Must match HumanoidConfig.h KEY_BODY_TAGS.
         device:         Torch device for pre-computed tensors.
-        include_phase:  Include phase channel in AMP features.
-        include_angvel: Include joint angular velocities in AMP features.
 
     Attributes:
         obs_dim:        Dimensionality of a single-frame AMP state.
@@ -64,8 +55,7 @@ class AMPMotionBuffer:
         joint_order,
         body_order,
         device="cpu",
-        include_phase=True,
-        include_angvel=True,
+        **kwargs,  # accept legacy kwargs for compatibility
     ):
         if isinstance(keyframe_files, str):
             keyframe_files = [keyframe_files]
@@ -75,15 +65,9 @@ class AMPMotionBuffer:
         self.body_order = list(body_order)
         self.num_joints = len(self.joint_order)
         self.num_bodies = len(self.body_order)
-        self.include_phase = include_phase
-        self.include_angvel = include_angvel
 
-        # Compute obs_dim:
-        # pelvis_y(1) + sin/cos(num_joints*2) + [angvel(num_joints)] + body_pos(num_bodies*2) + [phase(1)]
-        base_dim = 1 + self.num_joints * 2 + self.num_bodies * 2
-        if include_angvel:
-            base_dim += self.num_joints
-        self.obs_dim = base_dim + 1 if include_phase else base_dim
+        # Fixed obs_dim: pelvis_y(1) + sincos(2) + vel(3) + joint_sincos(24) + angvel(12) + body_pos(10)
+        self.obs_dim = 1 + 2 + 3 + self.num_joints * 2 + self.num_joints + self.num_bodies * 2
         self.transition_dim = self.obs_dim * 2
 
         clips = []  # list of (F, obs_dim) arrays, one per file
@@ -99,41 +83,47 @@ class AMPMotionBuffer:
 
             num_frames = len(keyframes)
 
-            # 1. Extract raw joint angles for angular velocity computation
+            # 1. Extract raw data for finite difference computation
             raw_angles = np.zeros((num_frames, self.num_joints), dtype=np.float32)
+            pelvis_x = np.zeros(num_frames, dtype=np.float32)
+            pelvis_y = np.zeros(num_frames, dtype=np.float32)
+            pelvis_angle = np.zeros(num_frames, dtype=np.float32)
+
             for i, kf in enumerate(keyframes):
                 for j, jname in enumerate(self.joint_order):
                     raw_angles[i, j] = kf.get(jname, 0.0)
+                pelvis_x[i] = kf.get("pelvis_x", 0.0)
+                pelvis_y[i] = kf.get("pelvis_y", 0.0)
+                pelvis_angle[i] = kf.get("pelvis_angle", 0.0)
 
-            # 2. Compute angular velocities via finite differences
-            if include_angvel:
-                angvel = np.zeros((num_frames, self.num_joints), dtype=np.float32)
-                for i in range(num_frames):
-                    if is_cyclic:
-                        i_next = (i + 1) % num_frames
-                    else:
-                        i_next = min(i + 1, num_frames - 1)
-                    angvel[i] = (raw_angles[i_next] - raw_angles[i]) / dt
+            # 2. Compute velocities via finite differences
+            joint_angvel = np.zeros((num_frames, self.num_joints), dtype=np.float32)
+            pelvis_vx = np.zeros(num_frames, dtype=np.float32)
+            pelvis_vy = np.zeros(num_frames, dtype=np.float32)
+            pelvis_omega = np.zeros(num_frames, dtype=np.float32)
+
+            for i in range(num_frames):
+                if is_cyclic:
+                    i_next = (i + 1) % num_frames
+                else:
+                    i_next = min(i + 1, num_frames - 1)
+                joint_angvel[i] = (raw_angles[i_next] - raw_angles[i]) / dt
+                pelvis_vx[i] = (pelvis_x[i_next] - pelvis_x[i]) / dt
+                pelvis_vy[i] = (pelvis_y[i_next] - pelvis_y[i]) / dt
+                # Angular velocity with wrap handling
+                da = pelvis_angle[i_next] - pelvis_angle[i]
+                while da > math.pi:
+                    da -= 2 * math.pi
+                while da < -math.pi:
+                    da += 2 * math.pi
+                pelvis_omega[i] = da / dt
 
             # 3. Build per-frame AMP features
             clip = np.zeros((num_frames, self.obs_dim), dtype=np.float32)
             for i, kf in enumerate(keyframes):
-                feat = self._keyframe_to_amp_base(kf)
-                if include_angvel:
-                    feat = np.concatenate([feat[:1 + self.num_joints * 2],
-                                           angvel[i],
-                                           feat[1 + self.num_joints * 2:]])
-                if include_phase:
-                    if num_frames <= 1:
-                        phase = 0.0
-                    elif is_cyclic:
-                        phase = i / num_frames
-                    else:
-                        phase = i / (num_frames - 1)
-                    clip[i, :-1] = feat
-                    clip[i, -1] = phase
-                else:
-                    clip[i] = feat
+                feat = self._build_frame(kf, pelvis_vx[i], pelvis_vy[i],
+                                         pelvis_omega[i], joint_angvel[i])
+                clip[i] = feat
             clips.append(clip)
 
         # Build transition pairs per clip, then concatenate
@@ -167,30 +157,42 @@ class AMPMotionBuffer:
         self.obs_std = raw_std.clamp(min=0.1)
 
         logging.info(
-            "AMPMotionBuffer: %d frames, %d transitions, "
-            "obs_dim=%d, transition_dim=%d, angvel=%s, phase=%s",
+            "AMPMotionBuffer: %d frames, %d transitions, obs_dim=%d, transition_dim=%d",
             total_frames, self.num_transitions, self.obs_dim, self.transition_dim,
-            include_angvel, include_phase,
         )
 
-    def _keyframe_to_amp_base(self, kf):
-        """Convert one keyframe dict to base AMP state (no angvel, no phase).
+    def _build_frame(self, kf, vx, vy, omega, joint_angvel_row):
+        """Build one AMP frame matching Brain.cpp AMP slice layout.
 
-        Returns array: [pelvis_y, sin(j0), cos(j0), ..., body0_lx, body0_ly, ...]
-        Angular velocity and phase are inserted/appended by the caller.
+        Layout: [pelvis_y(1), sin(a)(1), cos(a)(1), vx(1), vy(1), omega(1),
+                 joint_sincos(24), joint_angvel(12), body_pos(10)]
         """
         feat = []
 
         # 1. pelvis_y (height)
         feat.append(kf.get("pelvis_y", 0.0))
 
-        # 2. Joint angles -> sin/cos pairs (same order as Brain.cpp)
+        # 2. pelvis sincos
+        pa = kf.get("pelvis_angle", 0.0)
+        feat.append(math.sin(pa))
+        feat.append(math.cos(pa))
+
+        # 3. pelvis velocity
+        feat.append(float(vx))
+        feat.append(float(vy))
+        feat.append(float(omega))
+
+        # 4. Joint angles -> sin/cos pairs
         for jname in self.joint_order:
             angle = kf.get(jname, 0.0)
             feat.append(math.sin(angle))
             feat.append(math.cos(angle))
 
-        # 3. Body positions rotated into pelvis local frame
+        # 5. Joint angular velocities
+        for v in joint_angvel_row:
+            feat.append(float(v))
+
+        # 6. Body positions rotated into pelvis local frame
         pelvis_angle = kf.get("pelvis_angle", 0.0)
         cos_a = math.cos(-pelvis_angle)
         sin_a = math.sin(-pelvis_angle)
