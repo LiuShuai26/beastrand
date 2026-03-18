@@ -176,6 +176,9 @@ class PPOAMPAlgorithm:
                 disc_logits = self.discriminator(normed)
                 style_rewards_all = compute_style_reward(disc_logits)
         style_rewards_np = style_rewards_all.cpu().numpy().reshape(n_traj, T)
+        self._last_style_reward_mean = float(style_rewards_np.mean())
+        task_rewards = np.stack([v["reward"][:T] for v in views], axis=0)
+        self._last_task_reward_mean = float(task_rewards.mean())
 
         # -- 3. Per-trajectory GAE ----------------------------------------
         gamma = args.gamma
@@ -237,6 +240,8 @@ class PPOAMPAlgorithm:
         stats = self._ppo_update(batch)
         disc_stats = self._disc_update(batch)
         stats.update(disc_stats)
+        stats["reward/style_mean"] = getattr(self, "_last_style_reward_mean", 0.0)
+        stats["reward/task_mean"] = getattr(self, "_last_task_reward_mean", 0.0)
         return stats
 
     # ------------------------------------------------------------------
