@@ -77,13 +77,13 @@ class Args:
     )
     amp_obs_dim: int = field(default=0, metadata={"help": "AMP obs dimension (computed from slices)"})
 
-    task_reward_weight: float = field(default=0.5, metadata={"help": "Weight for task reward group"})
-    style_reward_weight: float = field(default=0.5, metadata={"help": "Weight for style reward group"})
+    task_reward_weight: float = field(default=0.3, metadata={"help": "Weight for task reward group"})
+    style_reward_weight: float = field(default=0.7, metadata={"help": "Weight for style reward group"})
 
     disc_lr: float = field(default=5e-4, metadata={"help": "Discriminator learning rate"})
     disc_hidden_dim: int = field(default=256, metadata={"help": "Discriminator hidden layer size"})
     disc_num_layers: int = field(default=2, metadata={"help": "Number of discriminator hidden layers"})
-    disc_grad_penalty_coef: float = field(default=5.0, metadata={"help": "Gradient penalty coefficient"})
+    disc_grad_penalty_coef: float = field(default=10.0, metadata={"help": "Gradient penalty coefficient"})
     disc_weight_decay: float = field(default=1e-4, metadata={"help": "Discriminator weight decay"})
     disc_update_epochs: int = field(default=1, metadata={"help": "Discriminator epochs per PPO iteration"})
     disc_noise_std: float = field(default=0.0, metadata={"help": "Gaussian noise std on disc inputs during training (0=off)"})
