@@ -29,4 +29,6 @@ class PPOLSTMDataRecord(PPODataRecord):
         batch["rnn_state_c"] = view["rnn_state_c"][:steps].astype(np.float32)
         if "mask" in view:
             batch["mask"] = view["mask"][:steps].astype(np.float32)
+        if "done" in view:
+            batch["done"] = view["done"][:steps].astype(np.float32)
         return batch

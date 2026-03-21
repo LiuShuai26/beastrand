@@ -22,6 +22,13 @@ class PPOLSTMPolicy(BasePolicy):
 
         hidden = int(getattr(cfg.args, "lstm_hidden_size", latent_dim))
         self.rnn = nn.LSTM(latent_dim, hidden)
+        # Initialize forget gate bias to 1.0 (Jozefowicz et al. 2015)
+        # Default bias=0 → sigmoid(0)=0.5 (forget half) which destabilizes
+        # long sequences. Bias=1 → sigmoid(1)=0.73 (keep more).
+        for name, param in self.rnn.named_parameters():
+            if "bias" in name:
+                n = param.size(0) // 4
+                param.data[n:2 * n].fill_(1.0)
         latent_dim = hidden
 
         self.dist_head = DiagGaussianDistribution(latent_dim, self.act_dim)
@@ -121,52 +128,52 @@ class PPOLSTMPolicy(BasePolicy):
 
     def evaluate_sequences(
         self,
-        obs: torch.Tensor,
-        actions: torch.Tensor,
-        h0: torch.Tensor,
-        c0: torch.Tensor,
-        masks: torch.Tensor | None = None,
+        obs_flat: torch.Tensor,
+        actions_flat: torch.Tensor,
+        rnn_states_flat: torch.Tensor,
+        dones_flat: torch.Tensor,
+        recurrence: int,
     ) -> Dict[str, torch.Tensor]:
-        """Batched BPTT: precompute body for all timesteps, loop only LSTM core.
+        """PackedSequence BPTT: split at episode boundaries, single LSTM call.
 
         Args:
-            obs: (S, T, obs_dim)
-            actions: (S, T, act_dim)
-            h0, c0: (1, S, hidden) — initial LSTM state (detached)
-            masks: (S, T) or None — 0.0 resets LSTM at episode boundaries
+            obs_flat: (N, obs_dim) — flat observations for all S*T steps
+            actions_flat: (N, act_dim) — flat actions
+            rnn_states_flat: (N, hidden*2) — per-step h+c concatenated
+            dones_flat: (N,) — done flags (1.0 = episode ended)
+            recurrence: int — rollout length T
         Returns:
-            dict with logp, entropy, value — all (S, T)
+            dict with logp, entropy, value — all (N,) flat
         """
-        S, T = obs.shape[:2]
+        from beastrand.utils.rnn_utils import build_rnn_inputs, unpack_rnn_outputs
 
-        # 1. Batched encoder: normalize + MLP body for all S*T samples at once
-        x = self.normalize_obs(obs.reshape(S * T, -1))
-        body_out = self.body(x).reshape(S, T, -1)
+        # 1. Batched encoder: normalize + MLP body for all N samples at once
+        x = self.normalize_obs(obs_flat)
+        body_out = self.body(x)
 
-        # 2. Sequential LSTM core (only part that needs the loop)
-        h, c = h0, c0
-        rnn_outputs = []
-        for t in range(T):
-            if masks is not None:
-                m = masks[:, t].view(1, -1, 1)
-                h = h * m
-                c = c * m
-            out, (h, c) = self.rnn(body_out[:, t].unsqueeze(0), (h, c))
-                rnn_outputs.append(out.squeeze(0))
+        # 2. PackedSequence LSTM — splits at episode boundaries automatically
+        input_seq, rnn_h0, inv_inds = build_rnn_inputs(
+            body_out, dones_flat, rnn_states_flat, recurrence,
+        )
 
-        # 3. Batched decoder: dist + value heads for all S*T outputs at once
-        rnn_out = torch.stack(rnn_outputs, dim=1)  # (S, T, hidden)
-        rnn_flat = rnn_out.reshape(S * T, -1)
+        # Split concatenated h+c into separate LSTM state tensors
+        hidden = self.rnn.hidden_size
+        h0, c0 = rnn_h0[:, :hidden], rnn_h0[:, hidden:]
+        h0 = h0.unsqueeze(0).contiguous()
+        c0 = c0.unsqueeze(0).contiguous()
 
-        dist = self.dist_head(rnn_flat)
-        act_flat = actions.reshape(S * T, -1)
-        logp = dist.log_prob(act_flat).reshape(S, T)
-        entropy = dist.entropy().reshape(S, T)
-        value = self.value_head(rnn_flat).squeeze(-1).reshape(S, T)
+        output_seq, _ = self.rnn(input_seq, (h0.detach(), c0.detach()))
+        core_out = unpack_rnn_outputs(output_seq, inv_inds)
+
+        # 3. Batched decoder: dist + value heads for all N outputs at once
+        dist = self.dist_head(core_out)
+        logp = dist.log_prob(actions_flat)
+        entropy = dist.entropy()
+        value = self.value_head(core_out).squeeze(-1)
 
         result = {"logp": logp, "entropy": entropy, "value": value}
         if hasattr(dist, "action_logits"):
-            result["action_logits"] = dist.action_logits().reshape(S, T, -1)
+            result["action_logits"] = dist.action_logits()
         return result
 
     def build_optimizers(self, ctx, eps: float = 1e-6) -> dict:

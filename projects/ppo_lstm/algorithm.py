@@ -121,21 +121,25 @@ def ppo_lstm_update(
     b_values = data["val"].float()
     b_rnn_h = data.get("rnn_state_h")
     b_rnn_c = data.get("rnn_state_c")
-    b_mask = data.get("mask")
+    b_dones = data.get("done")
 
     if b_rnn_h is None or b_rnn_c is None:
         raise ValueError("LSTM PPO requires rnn_state_h and rnn_state_c tensors")
+    if b_dones is None:
+        raise ValueError("LSTM PPO requires done tensor for PackedSequence BPTT")
 
     N = b_obs.shape[0]
     if N == 0:
         raise ValueError("ppo_lstm_update received an empty batch")
 
     recurrence = _validate_recurrence(ctx, N)
+    hidden = b_rnn_h.shape[-1]
 
     total_sequences = N // recurrence
     if total_sequences <= 0:
         raise ValueError("Not enough samples to form a recurrent minibatch")
 
+    # Reshape to (S, T, ...) for minibatch slicing
     seq_obs = _reshape_sequences(b_obs, total_sequences, recurrence)
     seq_actions = _reshape_sequences(b_actions, total_sequences, recurrence)
     seq_logprobs = _reshape_sequences(b_logprobs, total_sequences, recurrence)
@@ -144,7 +148,7 @@ def ppo_lstm_update(
     seq_values = _reshape_sequences(b_values, total_sequences, recurrence)
     seq_rnn_h = _reshape_sequences(b_rnn_h, total_sequences, recurrence)
     seq_rnn_c = _reshape_sequences(b_rnn_c, total_sequences, recurrence)
-    seq_mask = _reshape_sequences(b_mask, total_sequences, recurrence) if b_mask is not None else None
+    seq_dones = _reshape_sequences(b_dones, total_sequences, recurrence)
 
     seq_batch_size = ctx.args.minibatch_size // recurrence
     if seq_batch_size == 0:
@@ -171,26 +175,30 @@ def ppo_lstm_update(
             if len(mb_seq) == 0:
                 continue
 
-            obs_mb = seq_obs[mb_seq]
-            act_mb = seq_actions[mb_seq]
+            # Flatten minibatch to (S*T, ...) for PackedSequence
+            S = len(mb_seq)
+            mb_obs = seq_obs[mb_seq].reshape(S * recurrence, -1)
+            mb_act = seq_actions[mb_seq].reshape(S * recurrence, -1)
             logprob_old_mb = seq_logprobs[mb_seq]
             adv_mb = seq_advantages[mb_seq]
             ret_mb = seq_returns[mb_seq]
             val_old_mb = seq_values[mb_seq]
-            h0 = seq_rnn_h[mb_seq, 0]
-            c0 = seq_rnn_c[mb_seq, 0]
-            mask_mb = seq_mask[mb_seq] if seq_mask is not None else None
             logits_old_mb = seq_action_logits[mb_seq] if has_action_logits else None
 
-            # Batched BPTT: precompute body once, loop only LSTM core
+            # Concatenate h+c for PackedSequence rnn_states
+            mb_rnn_states = torch.cat(
+                [seq_rnn_h[mb_seq], seq_rnn_c[mb_seq]], dim=-1
+            ).reshape(S * recurrence, hidden * 2)
+            mb_dones = seq_dones[mb_seq].reshape(S * recurrence)
+
+            # PackedSequence BPTT
             out = policy.evaluate_sequences(
-                obs_mb, act_mb,
-                h0.unsqueeze(0).detach(), c0.unsqueeze(0).detach(),
-                masks=mask_mb,
+                mb_obs, mb_act, mb_rnn_states, mb_dones, recurrence,
             )
-            newlogprob = out["logp"]
-            entropy = out["entropy"]
-            newvalue = out["value"]
+            # Reshape flat outputs back to (S, T) for loss computation
+            newlogprob = out["logp"].reshape(S, recurrence)
+            entropy = out["entropy"].reshape(S, recurrence)
+            newvalue = out["value"].reshape(S, recurrence)
 
             logratio = newlogprob - logprob_old_mb
             ratio = logratio.exp()
@@ -228,8 +236,9 @@ def ppo_lstm_update(
 
             # KL penalty: analytical KL for continuous, approximate for discrete
             if kl_coeff > 0.0:
-                new_logits = out.get("action_logits")
-                if new_logits is not None and logits_old_mb is not None:
+                new_logits_flat = out.get("action_logits")
+                if new_logits_flat is not None and logits_old_mb is not None:
+                    new_logits = new_logits_flat.reshape(S, recurrence, -1)
                     analytical_kl = DiagGaussianDistribution.kl_from_logits(
                         new_logits, logits_old_mb,
                     ).mean()
