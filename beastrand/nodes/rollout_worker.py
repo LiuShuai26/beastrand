@@ -322,6 +322,7 @@ class RolloutWorker:
             while not self.ready_flags[flat_idx]:
                 if self.ctx.stop_event.is_set():
                     return
+                time.sleep(0.001)
             self.ready_flags[flat_idx] = 0
             if "value" in self.traj_tensors:
                 self.traj_tensors["value"][es.traj_idx, self.T] = self._infer_val[flat_idx]
@@ -381,6 +382,9 @@ class RolloutWorker:
     def _send_request_value(self, es: EnvState) -> None:
         """Send a VALUE-only request (bootstrap at trajectory boundary)."""
         flat_idx = self.worker_idx * self.num_envs + es.env_idx
+        # Sync mask so IS uses the correct LSTM reset boundary
+        if self.use_lstm:
+            self._infer_mask[flat_idx] = 0.0 if es.done else 1.0
         msg = struct.pack(REQ_FMT, flat_idx, OP_VALUE)
         self.bus.send("infer_req", msg)
         es.pending = True

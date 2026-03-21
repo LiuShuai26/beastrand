@@ -72,8 +72,8 @@ class Args:
     keyframe_file: str = field(default="", metadata={"help": "Keyframe JSON file(s), comma-separated for multiple clips (required for AMP)"})
 
     amp_obs_slices: List[Tuple[int, int]] = field(
-        default_factory=lambda: [(0, 6), (6, 30), (30, 42), (42, 52)],
-        metadata={"help": "Observation index slices for AMP features [(start, end), ...]"},
+        default_factory=list,
+        metadata={"help": "Observation index slices for AMP features [(start, end), ...]. Auto-detected from .so at startup."},
     )
     amp_obs_dim: int = field(default=0, metadata={"help": "AMP obs dimension (computed from slices)"})
 
@@ -96,6 +96,11 @@ class Args:
     resume: Optional[str] = field(default=None, metadata={"help": "Path to checkpoint .pt file to resume from"})
 
     # ---- helpers ----
+    @property
+    def keyframe_file_list(self) -> List[str]:
+        """Parse comma-separated keyframe_file into a list of stripped paths."""
+        return [f.strip() for f in self.keyframe_file.split(",") if f.strip()]
+
     def make_run_name(self) -> str:
         if self.run_name:
             return self.run_name
@@ -108,6 +113,10 @@ class Args:
         assert self.total_env_steps > 0
         assert self.num_envs_per_worker > 0
         assert self.keyframe_file, "--keyframe-file is required for AMP training"
+        assert self.amp_obs_slices, (
+            "--amp-obs-slices is empty. Either use a Beast .so env (auto-detected) "
+            "or set --amp-obs-slices explicitly."
+        )
 
     def __post_init__(self):
         # Compute amp_obs_dim from slices

@@ -24,9 +24,8 @@ def _configure_from_so(args: Args) -> None:
         print(f"[_configure_from_so] brain_class={args.brain_class}, "
               f"amp_obs_slices={args.amp_obs_slices}, amp_obs_dim={args.amp_obs_dim}")
     except (ImportError, ModuleNotFoundError):
-        print(f"[_configure_from_so] .so not found, using config defaults: "
-              f"amp_obs_slices={args.amp_obs_slices}, amp_obs_dim={args.amp_obs_dim}")
-        pass  # Not a Beast env, use config defaults
+        logging.warning("[_configure_from_so] .so not found for %s. "
+                        "amp_obs_slices must be set explicitly via CLI.", args.env_id)
 
 
 def main(argv: Optional[list[str]] = None) -> None:

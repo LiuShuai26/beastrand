@@ -11,7 +11,7 @@ Data flow:
 
 flat_idx = worker_idx * num_envs_per_worker + env_idx
 
-Numpy views are pre-cached in serve() so _gather_obs allocates nothing.
+Numpy views are pre-cached in serve() so _gather_obs avoids repeated .numpy() calls.
 int32 flat indexing eliminates astype(int64) and PyTorch 2D fancy indexing.
 """
 from __future__ import annotations
@@ -191,11 +191,11 @@ class InferenceServer:
         """Gather obs from pre-cached numpy views using 1D int32 indexing.
 
         No astype conversion: flat_idxs is int32 from the ZMQ message, and
-        numpy fancy indexing accepts int32 natively. torch.from_numpy wraps
-        the result zero-copy (no extra allocation).
+        numpy fancy indexing accepts int32 natively. Fancy indexing copies
+        the selected rows; torch.from_numpy then wraps that copy zero-copy.
         """
-        obs_np = self._obs_np[flat_idxs]          # int32 fancy index, returns copy
-        obs_batch = torch.from_numpy(obs_np)       # zero-copy wrap
+        obs_np = self._obs_np[flat_idxs]          # int32 fancy index, copies selected rows
+        obs_batch = torch.from_numpy(obs_np)       # zero-copy wrap of the copy
         if self.device.type != "cpu":
             obs_batch = obs_batch.to(self.device)
 

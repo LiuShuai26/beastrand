@@ -61,9 +61,8 @@ class PPOAMPAlgorithm:
 
         # Motion buffer (loads keyframe data)
         # Layout: pelvis_y(1) + sincos(2) + vel(3) + joint_sincos(24) + angvel(12) + body_pos(10) = 52
-        kf_files = [f.strip() for f in args.keyframe_file.split(",") if f.strip()]
         self.motion_buffer = AMPMotionBuffer(
-            keyframe_files=kf_files,
+            keyframe_files=args.keyframe_file_list,
             joint_order=JOINT_ORDER,
             body_order=BODY_ORDER,
             device=device,
@@ -88,6 +87,10 @@ class PPOAMPAlgorithm:
 
         # Thread lock: discriminator is read in ingest thread, written in main thread
         self._disc_lock = threading.Lock()
+
+        # Reward tracking (updated in prepare_batch_finalize, read in update)
+        self._last_style_reward_mean = 0.0
+        self._last_task_reward_mean = 0.0
 
         # LR schedule (mirrors PPOAlgorithm)
         self._initial_lr = args.learning_rate
@@ -237,26 +240,25 @@ class PPOAMPAlgorithm:
 
     def update(self, batch: Dict[str, Any]) -> Dict[str, float]:
         """PPO policy update + discriminator update."""
-        stats = self._ppo_update(batch)
-        disc_stats = self._disc_update(batch)
+        data = to_torch(batch, self.device)
+        stats = self._ppo_update(data)
+        disc_stats = self._disc_update(data)
         stats.update(disc_stats)
-        stats["reward/style_mean"] = getattr(self, "_last_style_reward_mean", 0.0)
-        stats["reward/task_mean"] = getattr(self, "_last_task_reward_mean", 0.0)
+        stats["reward/style_mean"] = self._last_style_reward_mean
+        stats["reward/task_mean"] = self._last_task_reward_mean
         return stats
 
     # ------------------------------------------------------------------
     # PPO policy + value update (with dual critics)
     # ------------------------------------------------------------------
 
-    def _ppo_update(self, batch: Dict[str, Any]) -> Dict[str, float]:
+    def _ppo_update(self, data: Dict[str, Any]) -> Dict[str, float]:
         args = self.ctx.args
         policy = self.policy
         optimizer = self.opt["opt"]
-        device = self.device
 
         policy.train()
 
-        data = to_torch(batch, device)
         b_obs = data["obs"]
         b_actions = data["act"]
         b_logprobs = data["logp"].float()
@@ -355,11 +357,9 @@ class PPOAMPAlgorithm:
     # Discriminator update
     # ------------------------------------------------------------------
 
-    def _disc_update(self, batch: Dict[str, Any]) -> Dict[str, float]:
+    def _disc_update(self, data: Dict[str, Any]) -> Dict[str, float]:
         args = self.ctx.args
-        device = self.device
 
-        data = to_torch(batch, device)
         all_transitions = data["amp_transition"]  # (N, transition_dim)
         dones = data["done"].float()               # (N,)
 
@@ -488,7 +488,7 @@ class PPOAMPAlgorithm:
 
     def load_checkpoint(self, ckpt_path: str, policy: nn.Module) -> int:
         """Load full training state. Returns env_step."""
-        ckpt = torch.load(ckpt_path, map_location=self.device)
+        ckpt = torch.load(ckpt_path, map_location=self.device, weights_only=True)
 
         policy.load_state_dict(ckpt["policy"])
         logging.info("loaded policy from %s", ckpt_path)

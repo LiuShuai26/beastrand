@@ -55,7 +55,6 @@ class AMPMotionBuffer:
         joint_order,
         body_order,
         device="cpu",
-        **kwargs,  # accept legacy kwargs for compatibility
     ):
         if isinstance(keyframe_files, str):
             keyframe_files = [keyframe_files]

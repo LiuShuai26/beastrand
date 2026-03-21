@@ -137,12 +137,10 @@ def _configure_beast_statics(env_module, args) -> None:
         assert reward_mode in MODE_MAP, f"unknown reward mode: {reward_mode}"
         env_module.set_reward_mode(MODE_MAP[reward_mode])
 
-    keyframe_file = getattr(args, "keyframe_file", "")
-    if keyframe_file and hasattr(env_module, "set_keyframe_file"):
-        # Resolve each path to absolute, pass comma-separated to .so for RSI
-        resolved = ",".join(
-            str(Path(f.strip()).resolve()) for f in keyframe_file.split(",") if f.strip()
-        )
+    kf_files = getattr(args, "keyframe_file_list", [])
+    if kf_files and hasattr(env_module, "set_keyframe_file"):
+        # Resolve each path to absolute, pass comma-separated to .so
+        resolved = ",".join(str(Path(f).resolve()) for f in kf_files)
         env_module.set_keyframe_file(resolved)
 
     if hasattr(env_module, "set_target_velocity"):

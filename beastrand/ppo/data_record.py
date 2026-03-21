@@ -7,10 +7,10 @@ from beastrand.core.base_record import DataRecordBase
 class PPODataRecord(DataRecordBase):
     @staticmethod
     def alloc_specs(ctx, T: int, obs_shape: Tuple[int, ...], act_shape: Tuple[int, ...]):
-        # Discrete action example: action shape [T, 1] int64; for Box, use float32 [T, *act_shape]
+        act_dtype = "int64" if getattr(ctx, "act_kind", None) == "discrete" else "float32"
         specs = {
             "obs":       ((T+1, *obs_shape), "float32"),
-            "action":    ((T, *act_shape),          "float32"),   # or (T, *act_shape) float32 for Box
+            "action":    ((T, *act_shape),          act_dtype),
             "reward": ((T,), "float32"),
             "terminated": ((T,), "uint8"),
             "truncated": ((T,), "uint8"),

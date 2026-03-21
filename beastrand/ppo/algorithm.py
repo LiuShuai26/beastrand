@@ -129,7 +129,7 @@ class PPOAlgorithm:
         SF-style partial override: learning_rate in args is applied to the
         optimizer after loading, so CLI overrides take effect on resume.
         """
-        ckpt = torch.load(ckpt_path, map_location=self.device)
+        ckpt = torch.load(ckpt_path, map_location=self.device, weights_only=True)
 
         policy.load_state_dict(ckpt["policy"])
         logging.info("loaded policy from %s", ckpt_path)

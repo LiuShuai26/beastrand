@@ -91,7 +91,7 @@ class CategoricalDistribution(nn.Module):
     def log_prob(self, actions: torch.Tensor) -> torch.Tensor:
         if actions.dim() == 2 and actions.size(-1) == 1:
             actions = actions.squeeze(-1)
-        return self._dist.log_prob(actions)  # [B]
+        return self._dist.log_prob(actions.long())  # [B]
 
     def entropy(self) -> torch.Tensor:
         return self._dist.entropy()  # [B]
