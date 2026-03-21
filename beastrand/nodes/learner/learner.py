@@ -82,6 +82,15 @@ def main(ctx, logger_queue) -> None:
     buf_lock = threading.Lock()
     have_batch = threading.Condition(buf_lock)
 
+    # Backpressure: ingest holds slots until training copies the batch.
+    # Two lists: _pending_slots = current batch (not yet consumed),
+    #            _consumed_slots = previous batch (ready to release after get_batch).
+    # Starts set so warmup (learning_starts) slots release freely.
+    batch_consumed = threading.Event()
+    batch_consumed.set()
+    _pending_slots: list = []    # slots for current unflushed batch
+    _consumed_slots: list = []   # slots from batch handed to training
+
     # ------------------------------------------------------------------
     # Ingest thread: recv filled traj → prepare → append → recycle
     # ------------------------------------------------------------------
@@ -101,6 +110,12 @@ def main(ctx, logger_queue) -> None:
         split_idx = traj_idx % _split_depth
         buffer_mgr.split_flags[flat_idx, split_idx] = 0
 
+    def _release_consumed_slots() -> None:
+        """Release slots from the batch that training has already copied."""
+        for ti in _consumed_slots:
+            _release_slot(ti)
+        _consumed_slots.clear()
+
     def _flush_pending(pending):
         """Run batched finalize, append all views, release traj slots."""
         if not pending:
@@ -115,11 +130,15 @@ def main(ctx, logger_queue) -> None:
             rdy = batch_buf.valid_steps >= learning_starts
 
         for ti, _ in pending:
-            _release_slot(ti)
+            _pending_slots.append(ti)
 
         pending.clear()
 
         if rdy:
+            # Move pending → consumed; training will release after get_batch
+            _consumed_slots.extend(_pending_slots)
+            _pending_slots.clear()
+            batch_consumed.clear()
             with have_batch:
                 have_batch.notify()
 
@@ -146,6 +165,10 @@ def main(ctx, logger_queue) -> None:
         _last_discard_log = time.monotonic()
 
         while not ctx.stop_event.is_set():
+            # Backpressure: release consumed slots once training has copied the batch
+            if _consumed_slots and batch_consumed.is_set():
+                _release_consumed_slots()
+
             # Poll with timeout so we can check stop_event periodically
             ready_socks = bus.poll(timeout_ms=100)
             if "filled_in" not in ready_socks:
@@ -183,15 +206,19 @@ def main(ctx, logger_queue) -> None:
                     if len(pending) >= _batch_trigger:
                         _flush_pending(pending)
                 else:
-                    # Plain PPO: append + release immediately
+                    # Plain PPO: append, hold slot until batch consumed
                     with buf_lock:
                         batch_buf.append_slot(view)
                         if batch_buf.valid_steps >= learning_starts:
                             notify_needed = True
 
-                    _release_slot(traj_idx)
+                    _pending_slots.append(traj_idx)
 
             if notify_needed:
+                # Move pending → consumed; training will release after get_batch
+                _consumed_slots.extend(_pending_slots)
+                _pending_slots.clear()
+                batch_consumed.clear()
                 with have_batch:
                     have_batch.notify()
 
@@ -216,6 +243,10 @@ def main(ctx, logger_queue) -> None:
         # are recycled and workers blocked on traj_queue.get() unblock.
         if pending:
             _flush_pending(pending)
+        # Release all slots so workers unblock and exit
+        _consumed_slots.extend(_pending_slots)
+        _pending_slots.clear()
+        _release_consumed_slots()
 
     ing_thread = threading.Thread(target=ingest_worker, name="ingest", daemon=True)
     ing_thread.start()
@@ -288,6 +319,7 @@ def main(ctx, logger_queue) -> None:
             t1 = time.perf_counter()
             with buf_lock:
                 view = batch_buf.get_batch()
+            batch_consumed.set()  # unblock ingest to release held slots
 
             N = view.get("reward", np.empty(0)).shape[0]
             if N == 0:

@@ -119,6 +119,56 @@ class PPOLSTMPolicy(BasePolicy):
             out["action_logits"] = dist.action_logits()
         return out
 
+    def evaluate_sequences(
+        self,
+        obs: torch.Tensor,
+        actions: torch.Tensor,
+        h0: torch.Tensor,
+        c0: torch.Tensor,
+        masks: torch.Tensor | None = None,
+    ) -> Dict[str, torch.Tensor]:
+        """Batched BPTT: precompute body for all timesteps, loop only LSTM core.
+
+        Args:
+            obs: (S, T, obs_dim)
+            actions: (S, T, act_dim)
+            h0, c0: (1, S, hidden) — initial LSTM state (detached)
+            masks: (S, T) or None — 0.0 resets LSTM at episode boundaries
+        Returns:
+            dict with logp, entropy, value — all (S, T)
+        """
+        S, T = obs.shape[:2]
+
+        # 1. Batched encoder: normalize + MLP body for all S*T samples at once
+        x = self.normalize_obs(obs.reshape(S * T, -1))
+        body_out = self.body(x).reshape(S, T, -1)
+
+        # 2. Sequential LSTM core (only part that needs the loop)
+        h, c = h0, c0
+        rnn_outputs = []
+        for t in range(T):
+            if masks is not None:
+                m = masks[:, t].view(1, -1, 1)
+                h = h * m
+                c = c * m
+            out, (h, c) = self.rnn(body_out[:, t].unsqueeze(0), (h, c))
+                rnn_outputs.append(out.squeeze(0))
+
+        # 3. Batched decoder: dist + value heads for all S*T outputs at once
+        rnn_out = torch.stack(rnn_outputs, dim=1)  # (S, T, hidden)
+        rnn_flat = rnn_out.reshape(S * T, -1)
+
+        dist = self.dist_head(rnn_flat)
+        act_flat = actions.reshape(S * T, -1)
+        logp = dist.log_prob(act_flat).reshape(S, T)
+        entropy = dist.entropy().reshape(S, T)
+        value = self.value_head(rnn_flat).squeeze(-1).reshape(S, T)
+
+        result = {"logp": logp, "entropy": entropy, "value": value}
+        if hasattr(dist, "action_logits"):
+            result["action_logits"] = dist.action_logits().reshape(S, T, -1)
+        return result
+
     def build_optimizers(self, ctx, eps: float = 1e-6) -> dict:
         opt = optim.Adam(self.parameters(), lr=ctx.args.learning_rate, eps=eps)
         return {"opt": opt}

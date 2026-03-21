@@ -102,6 +102,17 @@ def ppo_lstm_update(
     if not bool(getattr(policy, "use_lstm", False)):
         raise ValueError("PPOLSTMAlgorithm requires a recurrent policy (use_lstm=True)")
 
+    # Update obs normalizer once with the full batch, then freeze during BPTT.
+    # Without this, the normalizer updates at every BPTT step, causing each
+    # timestep in a sequence to be normalized with different statistics —
+    # corrupting LSTM hidden state evolution.
+    obs_normalizer = getattr(policy, "obs_normalizer", None)
+    if obs_normalizer is not None:
+        obs_normalizer.train()
+        with torch.no_grad():
+            obs_normalizer(data["obs"])
+        obs_normalizer.eval()
+
     b_obs = data["obs"]
     b_actions = data["act"]
     b_logprobs = data["logp"].float()
@@ -171,33 +182,15 @@ def ppo_lstm_update(
             mask_mb = seq_mask[mb_seq] if seq_mask is not None else None
             logits_old_mb = seq_action_logits[mb_seq] if has_action_logits else None
 
-            state = (h0.unsqueeze(0).detach(), c0.unsqueeze(0).detach())
-            h, c = state
-            logp_news = []
-            entropies = []
-            values = []
-            logits_news = []
-
-            for t in range(recurrence):
-                step_inputs: Dict[str, Any] = {
-                    "obs": obs_mb[:, t, ...],
-                    "action": act_mb[:, t, ...],
-                    "rnn_state": (h, c),
-                }
-                if mask_mb is not None:
-                    step_inputs["mask"] = mask_mb[:, t]
-
-                out = policy.evaluate_actions(step_inputs)
-                logp_news.append(out["logp"])
-                entropies.append(out["entropy"])
-                values.append(out["value"])
-                if has_action_logits and "action_logits" in out:
-                    logits_news.append(out["action_logits"])
-                h, c = out.get("rnn_state", (h, c))
-
-            newlogprob = torch.stack(logp_news, dim=1)
-            entropy = torch.stack(entropies, dim=1)
-            newvalue = torch.stack(values, dim=1)
+            # Batched BPTT: precompute body once, loop only LSTM core
+            out = policy.evaluate_sequences(
+                obs_mb, act_mb,
+                h0.unsqueeze(0).detach(), c0.unsqueeze(0).detach(),
+                masks=mask_mb,
+            )
+            newlogprob = out["logp"]
+            entropy = out["entropy"]
+            newvalue = out["value"]
 
             logratio = newlogprob - logprob_old_mb
             ratio = logratio.exp()
@@ -235,8 +228,8 @@ def ppo_lstm_update(
 
             # KL penalty: analytical KL for continuous, approximate for discrete
             if kl_coeff > 0.0:
-                if logits_news and logits_old_mb is not None:
-                    new_logits = torch.stack(logits_news, dim=1)  # [S, T, act_dim*2]
+                new_logits = out.get("action_logits")
+                if new_logits is not None and logits_old_mb is not None:
                     analytical_kl = DiagGaussianDistribution.kl_from_logits(
                         new_logits, logits_old_mb,
                     ).mean()

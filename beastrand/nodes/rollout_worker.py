@@ -64,7 +64,8 @@ class RolloutWorker:
         self.num_envs = getattr(args, "num_envs_per_worker", 2)
         self.split_depth = ctx.buffer_mgr.split_depth
 
-        self.use_lstm = bool(getattr(args, "use_lstm", False))
+        # Detect LSTM from schema (rnn_state_h present in traj_tensors)
+        self.use_lstm = "rnn_state_h" in ctx.buffer_mgr.traj_tensors
         self.bootstrap_value = bool(args.bootstrap_value)
 
         # Shared tensors from BufferMgr
@@ -374,10 +375,9 @@ class RolloutWorker:
         es.step = 0
         es.done = False
 
-        # Reset LSTM live state at trajectory boundary.
-        if self.use_lstm and self._rnn_live_h is not None:
-            self._rnn_live_h[flat_idx] = 0.0
-            self._rnn_live_c[flat_idx] = 0.0
+        # NOTE: do NOT reset LSTM live state at trajectory boundary.
+        # Hidden state carries over across trajectories within the same episode.
+        # Reset only happens on episode boundaries (line 278-281).
 
     def _send_request_value(self, es: EnvState) -> None:
         """Send a VALUE-only request (bootstrap at trajectory boundary)."""
