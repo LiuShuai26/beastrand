@@ -54,6 +54,7 @@ class Args:
     normalize_input: bool = field(default=True, metadata={"help": "Normalize observations with running mean/std (policy-level)"})
     kl_loss_coeff: float = field(default=0.0, metadata={"help": "KL divergence penalty coefficient (0=disabled)"})
     lr_schedule: str = field(default="constant", metadata={"help": "LR schedule: constant | linear_decay"})
+    sync_training: bool = field(default=False, metadata={"help": "Sync mode: workers wait for training to finish before collecting more data"})
 
     # Logging / checkpoints
     logdir: str = field(default="train_logs", metadata={"help": "Root log directory"})

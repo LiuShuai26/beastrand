@@ -22,13 +22,6 @@ class PPOLSTMPolicy(BasePolicy):
 
         hidden = int(getattr(cfg.args, "lstm_hidden_size", latent_dim))
         self.rnn = nn.LSTM(latent_dim, hidden)
-        # Initialize forget gate bias to 1.0 (Jozefowicz et al. 2015)
-        # Default bias=0 → sigmoid(0)=0.5 (forget half) which destabilizes
-        # long sequences. Bias=1 → sigmoid(1)=0.73 (keep more).
-        for name, param in self.rnn.named_parameters():
-            if "bias" in name:
-                n = param.size(0) // 4
-                param.data[n:2 * n].fill_(1.0)
         latent_dim = hidden
 
         self.dist_head = DiagGaussianDistribution(latent_dim, self.act_dim)
@@ -145,7 +138,7 @@ class PPOLSTMPolicy(BasePolicy):
         Returns:
             dict with logp, entropy, value — all (N,) flat
         """
-        from beastrand.utils.rnn_utils import build_rnn_inputs, unpack_rnn_outputs
+        from projects.ppo_lstm.rnn_utils import build_rnn_inputs, unpack_rnn_outputs
 
         # 1. Batched encoder: normalize + MLP body for all N samples at once
         x = self.normalize_obs(obs_flat)

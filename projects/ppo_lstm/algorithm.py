@@ -46,6 +46,11 @@ class PPOLSTMAlgorithm:
 
     def update(self, batch):
         self._step_lr()
+        # Normalize returns on the full batch (same as PPOAlgorithm)
+        if self.returns_rms is not None:
+            raw_returns = batch["ret"]
+            self.returns_rms.update(raw_returns)
+            batch["ret"] = self.returns_rms.normalize(raw_returns)
         stats = ppo_lstm_update(self.ctx, self.policy, self.opt, batch, self.device)
         stats["learning_rate"] = self.opt["opt"].param_groups[0]["lr"]
         return stats

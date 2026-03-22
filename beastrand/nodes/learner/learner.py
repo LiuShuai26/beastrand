@@ -81,6 +81,7 @@ def main(ctx, logger_queue) -> None:
     batch_buf = BatchBuffer(meta=meta, batch_size=batch_size, buffer_size=buffer_size)
     buf_lock = threading.Lock()
     have_batch = threading.Condition(buf_lock)
+    sync_mode = getattr(args, "sync_training", False)
 
     # Backpressure: ingest holds slots until training copies the batch.
     # Two lists: _pending_slots = current batch (not yet consumed),
@@ -319,10 +320,13 @@ def main(ctx, logger_queue) -> None:
             t1 = time.perf_counter()
             with buf_lock:
                 view = batch_buf.get_batch()
-            batch_consumed.set()  # unblock ingest to release held slots
+            if not sync_mode:
+                batch_consumed.set()  # async: release slots after copy
 
             N = view.get("reward", np.empty(0)).shape[0]
             if N == 0:
+                if sync_mode:
+                    batch_consumed.set()
                 continue
 
             batch = record_cls.build_batch(ctx, view)
@@ -340,6 +344,9 @@ def main(ctx, logger_queue) -> None:
             t2 = time.perf_counter()
             stats = algorithm.update(batch)
             update_ms = (time.perf_counter() - t2) * 1000.0
+
+            if sync_mode:
+                batch_consumed.set()  # sync: release slots after training
 
             # ---- 4. Sync weights -----------------------------------------
             t3 = time.perf_counter()
