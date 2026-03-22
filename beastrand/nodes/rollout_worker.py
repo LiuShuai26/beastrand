@@ -122,10 +122,20 @@ class RolloutWorker:
         # --- Create all environments with fixed traj slot assignment ---
         self.envs: List[EnvState] = []
         wi = self.worker_idx
+        rng = np.random.RandomState(args.seed + wi)
         for ei in range(self.num_envs):
             seed = args.seed + wi * self.num_envs + ei
             env = _make_env(args.env_id, seed=seed, args=args)
             obs, _ = env.reset(seed=seed)
+
+            # Decorrelate experience: each env runs a random number of warmup
+            # steps so envs start at different episode phases in the first batch.
+            warmup = rng.randint(0, self.T)
+            for _ in range(warmup):
+                obs, _, terminated, truncated, _ = env.step(env.action_space.sample())
+                if terminated or truncated:
+                    obs, _ = env.reset()
+
             flat_idx = wi * self.num_envs + ei
             traj_idx = flat_idx * self.split_depth + 0  # start with split 0
             self.envs.append(EnvState(

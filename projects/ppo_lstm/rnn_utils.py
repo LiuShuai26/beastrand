@@ -52,7 +52,7 @@ def _build_pack_info_from_dones(
 
     # Sort by length (descending) for PackedSequence
     lengths_sorted, sorted_indices = torch.sort(lengths, descending=True)
-    cpu_lengths = lengths_sorted.to(device="cpu", non_blocking=True)
+    cpu_lengths = lengths_sorted.to(device="cpu")
 
     starts_sorted = starts.index_select(0, sorted_indices)
 
