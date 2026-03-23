@@ -209,13 +209,19 @@ def main(ctx, logger_queue) -> None:
                     if len(pending) >= _batch_trigger:
                         _flush_pending(pending)
                 else:
-                    # Plain PPO: append, hold slot until batch consumed
+                    # Plain PPO: append to batch buffer
                     with buf_lock:
                         batch_buf.append_slot(view)
                         if batch_buf.valid_steps >= learning_starts:
                             notify_needed = True
 
-                    _pending_slots.append(traj_idx)
+                    if notify_needed:
+                        # Batch full — hold slot until training copies it
+                        _pending_slots.append(traj_idx)
+                    else:
+                        # Batch not full yet — safe to release immediately
+                        # (get_batch won't be called until buffer is full)
+                        _release_slot(traj_idx)
 
             if notify_needed:
                 # Move pending → consumed; training will release after get_batch
