@@ -170,7 +170,8 @@ class RolloutWorker:
         # Initial: send inference requests for all envs (all agents)
         for es in self.envs:
             self._send_request(es, OP_ACT)
-            self._send_extra_requests(es, OP_ACT)
+            if self.num_agents > 1:
+                self._send_extra_requests(es, OP_ACT)
 
         try:
             self._loop_per_env()
@@ -192,13 +193,15 @@ class RolloutWorker:
                 # Wait for ALL agents' inference to complete
                 if not self.ready_flags[flat_idx]:
                     continue
-                if not all(f[flat_idx] for f in self._extra_ready_flags):
-                    continue
+                if self.num_agents > 1:
+                    if not all(f[flat_idx] for f in self._extra_ready_flags):
+                        continue
 
                 # Clear all ready flags
                 self.ready_flags[flat_idx] = 0
-                for f in self._extra_ready_flags:
-                    f[flat_idx] = 0
+                if self.num_agents > 1:
+                    for f in self._extra_ready_flags:
+                        f[flat_idx] = 0
 
                 t1 = time.monotonic()
                 self._advance_single(es)
@@ -209,7 +212,8 @@ class RolloutWorker:
 
                 if es.step < self.T:
                     self._send_request(es, OP_ACT)
-                    self._send_extra_requests(es, OP_ACT)
+                    if self.num_agents > 1:
+                        self._send_extra_requests(es, OP_ACT)
                 stepped_any = True
 
             if self.prof:
