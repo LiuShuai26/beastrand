@@ -15,7 +15,7 @@ with native int32 (no astype overhead vs. 2D PyTorch fancy indexing).
 """
 from __future__ import annotations
 
-from typing import Dict, Optional, Tuple
+from typing import Dict, List, Optional, Tuple
 
 import torch
 import numpy as np
@@ -130,6 +130,21 @@ class BufferMgr:
             logits_dim = self.traj_tensors["action_logits"].shape[2]  # [num_traj, T, dim]
             self.infer_action_logits = torch.zeros(WE, logits_dim)
             self.infer_action_logits.share_memory_()
+
+        # --- Extra agent inference buffers (multi-agent / self-play) ------
+        # Agent 0 uses the buffers above (full: obs, act, logp, val, etc.).
+        # Agents 1..N-1 need only minimal buffers (obs, act, ready_flags)
+        # since their trajectories are never collected for training.
+        # When num_agents=1 (default), extra_infer is empty → zero overhead.
+        _args = getattr(cfg, "args", cfg)
+        self.num_agents: int = getattr(_args, "num_agents", 1)
+        self.extra_infer: List[Dict[str, torch.Tensor]] = []
+        for _ in range(1, self.num_agents):
+            self.extra_infer.append({
+                "obs": torch.zeros(WE, *obs_shape).share_memory_(),
+                "act": torch.zeros(WE, *act_shape).share_memory_(),
+                "ready_flags": torch.zeros(WE, dtype=torch.int32).share_memory_(),
+            })
 
     # ------------------------------------------------------------------
     # Convenience helpers

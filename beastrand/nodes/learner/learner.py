@@ -274,6 +274,19 @@ def main(ctx, logger_queue) -> None:
     _save_dir = os.path.join(getattr(args, "logdir", "train_logs"), ctx.run_name)
     _max_ckpts = getattr(args, "max_checkpoints", 5)
 
+    # --- Self-play snapshot pool (num_agents > 1) ---
+    _snap_pool = None
+    _snap_save_interval = 0
+    _last_snap_version = 0
+    _num_agents = getattr(args, "num_agents", 1)
+    if _num_agents > 1 and ctx.snapshot_dir:
+        from beastrand.utils.snapshot_pool import SnapshotPool
+        _snap_pool = SnapshotPool(
+            ctx.snapshot_dir,
+            max_snapshots=getattr(args, "max_snapshots", 20),
+        )
+        _snap_save_interval = getattr(args, "snapshot_save_interval", 10)
+
     def _prune_checkpoints() -> None:
         if _max_ckpts <= 0:
             return
@@ -368,6 +381,12 @@ def main(ctx, logger_queue) -> None:
             if _ckpt_version_interval > 0 and version - _last_ckpt_version >= _ckpt_version_interval:
                 _save_checkpoint(ctx.global_step.value)
                 _last_ckpt_version = version
+
+            # --- Self-play snapshot saving ---
+            if _snap_pool and _snap_save_interval > 0:
+                if version - _last_snap_version >= _snap_save_interval:
+                    _snap_pool.save(policy, version)
+                    _last_snap_version = version
 
             # --- Logging (x-axis = env steps for alignment with actor metrics) ---
             env_step = int(ctx.global_step.value)

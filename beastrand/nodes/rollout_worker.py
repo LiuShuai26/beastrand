@@ -22,8 +22,8 @@ import logging
 import struct
 import time
 from collections import deque
-from dataclasses import dataclass
-from typing import Dict, List
+from dataclasses import dataclass, field
+from typing import Dict, List, Optional
 
 import numpy as np
 import torch
@@ -44,7 +44,7 @@ OP_VALUE = 1
 class EnvState:
     """Mutable state for a single environment."""
     env: object
-    obs: np.ndarray
+    obs: np.ndarray           # agent 0 obs (training agent)
     traj_idx: int
     env_idx: int
     step: int = 0
@@ -52,6 +52,7 @@ class EnvState:
     episode_reward: float = 0.0
     episode_length: int = 0
     done: bool = False
+    extra_obs: list = field(default_factory=list)  # agents 1+ obs (multi-agent only)
 
 
 class RolloutWorker:
@@ -93,6 +94,13 @@ class RolloutWorker:
         # Per-env split index (local, alternates 0/1/... each trajectory).
         self._env_split = np.zeros(self.num_envs, dtype=np.int32)
 
+        # --- Multi-agent: per-agent inference buffers ---
+        # Agent 0 uses existing buffers above. Agents 1+ use extra_infer.
+        self.num_agents = ctx.buffer_mgr.num_agents
+        self._extra_infer_obs: List[torch.Tensor] = [e["obs"] for e in ctx.buffer_mgr.extra_infer]
+        self._extra_infer_act: List[torch.Tensor] = [e["act"] for e in ctx.buffer_mgr.extra_infer]
+        self._extra_ready_flags: List[torch.Tensor] = [e["ready_flags"] for e in ctx.buffer_mgr.extra_infer]
+
         # --- ZMQ (only for sending requests + filled trajectories) ---
         self.bus = StrandBus()
         base = ctx.ipc_dir
@@ -101,6 +109,11 @@ class RolloutWorker:
         for i in range(1, num_infer):
             self.bus.sockets["infer_req"].connect(f"{base}/infer_{i}.req")
         self.bus.open("filled_out", mode="push", endpoint=f"{base}/data.filled.in", bind=False)
+        # Per-agent ZMQ sockets for agents 1+ (each connects to its own IS)
+        # Endpoint must match IS bind: infer_{server_idx}.req where server_idx="agent_{a}"
+        for a in range(1, self.num_agents):
+            self.bus.open(f"agent_{a}_req", mode="push",
+                          endpoint=f"{base}/infer_agent_{a}.req", bind=False)
 
         # --- Profiling (only worker 0) & episode stats (all workers) ---
         self.prof = ProfileAccum(interval=5.0) if worker_idx == 0 else None
@@ -138,8 +151,12 @@ class RolloutWorker:
 
             flat_idx = wi * self.num_envs + ei
             traj_idx = flat_idx * self.split_depth + 0  # start with split 0
+            extra_obs = []
+            if self.num_agents > 1 and hasattr(env, "agent_obs"):
+                extra_obs = [env.agent_obs[a] for a in range(1, self.num_agents)]
             self.envs.append(EnvState(
                 env=env, obs=obs, traj_idx=traj_idx, env_idx=ei,
+                extra_obs=extra_obs,
             ))
 
     # ------------------------------------------------------------------
@@ -147,12 +164,13 @@ class RolloutWorker:
     # ------------------------------------------------------------------
 
     def run(self):
-        logging.info("[worker:%d] ready (%d envs, T=%d)",
-                     self.worker_idx, self.num_envs, self.T)
+        logging.info("[worker:%d] ready (%d envs, T=%d, agents=%d)",
+                     self.worker_idx, self.num_envs, self.T, self.num_agents)
 
-        # Initial: send inference requests for all envs
+        # Initial: send inference requests for all envs (all agents)
         for es in self.envs:
             self._send_request(es, OP_ACT)
+            self._send_extra_requests(es, OP_ACT)
 
         try:
             self._loop_per_env()
@@ -170,10 +188,18 @@ class RolloutWorker:
                 if not es.pending:
                     continue
                 flat_idx = self.worker_idx * self.num_envs + es.env_idx
+
+                # Wait for ALL agents' inference to complete
                 if not self.ready_flags[flat_idx]:
                     continue
+                if not all(f[flat_idx] for f in self._extra_ready_flags):
+                    continue
 
+                # Clear all ready flags
                 self.ready_flags[flat_idx] = 0
+                for f in self._extra_ready_flags:
+                    f[flat_idx] = 0
+
                 t1 = time.monotonic()
                 self._advance_single(es)
                 t2 = time.monotonic()
@@ -183,6 +209,7 @@ class RolloutWorker:
 
                 if es.step < self.T:
                     self._send_request(es, OP_ACT)
+                    self._send_extra_requests(es, OP_ACT)
                 stepped_any = True
 
             if self.prof:
@@ -226,6 +253,17 @@ class RolloutWorker:
         self.bus.send("infer_req", msg)
         es.pending = True
 
+    def _send_extra_requests(self, es: EnvState, op: int) -> None:
+        """Send inference requests for agents 1+ (no trajectory storage)."""
+        if self.num_agents <= 1:
+            return
+        flat_idx = self.worker_idx * self.num_envs + es.env_idx
+        for a_offset, extra_obs in enumerate(es.extra_obs):
+            obs_t = torch.from_numpy(np.asarray(extra_obs, dtype=np.float32))
+            self._extra_infer_obs[a_offset][flat_idx] = obs_t
+            msg = struct.pack(REQ_FMT, flat_idx, op)
+            self.bus.send(f"agent_{a_offset + 1}_req", msg)
+
     # ------------------------------------------------------------------
     # Advance a single environment
     # ------------------------------------------------------------------
@@ -252,7 +290,16 @@ class RolloutWorker:
         if "model_version" in self.traj_tensors:
             self.traj_tensors["model_version"][ti, s] = int(self.ctx.buffer_mgr.policy_version.item())
 
-        # env.step
+        # Multi-agent: set other agents' actions on env via side-channel
+        if self.num_agents > 1 and hasattr(es.env, "agent_actions"):
+            for a_offset in range(len(self._extra_infer_act)):
+                act = self._extra_infer_act[a_offset][flat_idx]
+                if self.act_discrete:
+                    es.env.agent_actions[a_offset + 1] = int(act[0].item())
+                else:
+                    es.env.agent_actions[a_offset + 1] = act.numpy().copy()
+
+        # env.step (agent 0's action)
         next_obs, reward, terminated, truncated, info = es.env.step(action)
         done = bool(terminated or truncated)
 
@@ -291,6 +338,9 @@ class RolloutWorker:
                 self._rnn_live_c[flat_idx] = 0.0
 
         es.obs = next_obs
+        # Update extra agents' obs from side-channel
+        if self.num_agents > 1 and hasattr(es.env, "agent_obs"):
+            es.extra_obs = [es.env.agent_obs[a] for a in range(1, self.num_agents)]
         es.step += 1
         es.pending = False
 

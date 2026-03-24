@@ -110,6 +110,7 @@ class Shared:
         # Filled by Manager.launch() before spawning children
         self.buffer_mgr: Optional[BufferMgr] = None
         self.param_server: Optional[ParameterServer] = None
+        self.snapshot_dir: Optional[str] = None  # multi-agent: path to snapshot pool
 
         # Env specs (set by Manager)
         self.obs_shape = ()
@@ -218,6 +219,21 @@ class Manager:
         init_policy = policy_cls(self.ctx)  # CPU — just need state_dict shape
         param_server = ParameterServer(init_policy, torch.device("cpu"), buffer_mgr.policy_version)
         self.ctx.param_server = param_server
+
+        # 5b. Multi-agent: save initial snapshot so opponent IS can load immediately
+        num_agents = getattr(self.args, "num_agents", 1)
+        if num_agents > 1:
+            import os
+            snap_dir = os.path.join(
+                getattr(self.args, "logdir", "train_logs"),
+                self.ctx.run_name, "snapshots",
+            )
+            os.makedirs(snap_dir, exist_ok=True)
+            self.ctx.snapshot_dir = snap_dir
+            from beastrand.utils.snapshot_pool import SnapshotPool
+            SnapshotPool(snap_dir).save(init_policy, version=0)
+            logging.info("Multi-agent: initial snapshot saved to %s", snap_dir)
+
         del init_policy
         logging.info("ParameterServer: shared weights created")
 
@@ -244,6 +260,16 @@ class Manager:
                         logger_queue=log_q, server_idx=i)
         for i in range(num_infer):
             self._wait_ready(f"inference_server_{i}")
+
+        # Phase 3b: Per-agent InferenceServers for non-training agents (self-play)
+        if num_agents > 1:
+            for a in range(1, num_agents):
+                name = f"inference_server_agent_{a}"
+                self.ctx.ready_events[name] = mp.Event()
+                self._spawn(name, inference_server_main,
+                            logger_queue=log_q, server_idx=f"agent_{a}", agent_role=a)
+            for a in range(1, num_agents):
+                self._wait_ready(f"inference_server_agent_{a}")
 
         # Phase 4: Workers (connect to infer_{i}.req, data.filled.in — all binders ready)
         for i in range(num_workers):

@@ -39,9 +39,10 @@ OP_VALUE = 1
 
 
 class InferenceServer:
-    def __init__(self, ctx, server_idx: int = 0):
+    def __init__(self, ctx, server_idx: int | str = 0, agent_role: int = 0):
         self.ctx = ctx
         self.server_idx = server_idx
+        self.agent_role = agent_role  # 0 = training agent (ParameterServer), >0 = snapshot agent
         self.device = torch.device(getattr(ctx.args, "inference_device", "cpu"))
 
         # -- policy --
@@ -89,47 +90,75 @@ class InferenceServer:
     # ------------------------------------------------------------------
 
     def serve(self):
-        # Attach shared resources from ctx (set by Manager before spawn)
-        self.traj_tensors = self.ctx.buffer_mgr.traj_tensors
-        self.ready_flags = self.ctx.buffer_mgr.ready_flags
-        self.rnn_state_live_h = self.ctx.buffer_mgr.rnn_state_live_h
-        self.rnn_state_live_c = self.ctx.buffer_mgr.rnn_state_live_c
-        self.infer_obs = self.ctx.buffer_mgr.infer_obs
-        self.infer_act = self.ctx.buffer_mgr.infer_act
-        self.infer_logp = self.ctx.buffer_mgr.infer_logp
-        self.infer_val = self.ctx.buffer_mgr.infer_val
-        self.infer_mask = self.ctx.buffer_mgr.infer_mask
-        self.infer_action_logits = self.ctx.buffer_mgr.infer_action_logits
-        self.param_client = ParameterClient(self.ctx.param_server)
+        buf = self.ctx.buffer_mgr
 
-        # Pre-cache numpy views (zero-copy) to avoid per-call allocation in _gather_obs
+        if self.agent_role == 0:
+            # Training agent: full buffers (obs, act, logp, val, mask, logits, rnn)
+            self.traj_tensors = buf.traj_tensors
+            self.ready_flags = buf.ready_flags
+            self.rnn_state_live_h = buf.rnn_state_live_h
+            self.rnn_state_live_c = buf.rnn_state_live_c
+            self.infer_obs = buf.infer_obs
+            self.infer_act = buf.infer_act
+            self.infer_logp = buf.infer_logp
+            self.infer_val = buf.infer_val
+            self.infer_mask = buf.infer_mask
+            self.infer_action_logits = buf.infer_action_logits
+            self.param_client = ParameterClient(self.ctx.param_server)
+        else:
+            # Non-training agent: minimal buffers (obs, act, ready_flags only)
+            extra = buf.extra_infer[self.agent_role - 1]
+            self.infer_obs = extra["obs"]
+            self.infer_act = extra["act"]
+            self.ready_flags = extra["ready_flags"]
+            # No logp/val/mask/logits — these agents don't train
+            from beastrand.utils.snapshot_pool import SnapshotPool
+            self._snapshot_pool = SnapshotPool(self.ctx.snapshot_dir)
+            self._opp_refresh_interval = getattr(self.ctx.args, "opp_refresh_interval", 100)
+            self._opp_batch_counter = 0
+
+        # Pre-cache numpy views (zero-copy)
         self._obs_np = self.infer_obs.numpy()
         self._act_np = self.infer_act.numpy()
-        self._logp_np = self.infer_logp.numpy()
-        self._val_np = self.infer_val.numpy()
         self._flags_np = self.ready_flags.numpy()
-        if self.use_lstm:
-            self._mask_np = self.infer_mask.numpy()
-            if self.rnn_state_live_h is not None:
-                self._rnn_h_np = self.rnn_state_live_h.numpy()
-                self._rnn_c_np = self.rnn_state_live_c.numpy()
-        if self.infer_action_logits is not None:
-            self._logits_np = self.infer_action_logits.numpy()
+        if self.agent_role == 0:
+            self._logp_np = self.infer_logp.numpy()
+            self._val_np = self.infer_val.numpy()
+            if self.use_lstm:
+                self._mask_np = self.infer_mask.numpy()
+                if self.rnn_state_live_h is not None:
+                    self._rnn_h_np = self.rnn_state_live_h.numpy()
+                    self._rnn_c_np = self.rnn_state_live_c.numpy()
+            if self.infer_action_logits is not None:
+                self._logits_np = self.infer_action_logits.numpy()
 
         # Initial weight load
-        self.param_client.ensure_updated(self.policy)
+        if self.agent_role == 0:
+            self.param_client.ensure_updated(self.policy)
+        else:
+            snap = self._snapshot_pool.sample_random()
+            if snap:
+                self._snapshot_pool.load_into(snap, self.policy)
 
         # Signal Manager that ZMQ sockets are bound and we're ready
         ev = self.ctx.ready_events.get(f"inference_server_{self.server_idx}")
         if ev is not None:
             ev.set()
-        logging.info("[inference:%d] ready (device=%s, lstm=%s)", self.server_idx, self.device, self.use_lstm)
+        logging.info("[inference:%s] ready (device=%s, role=%d)", self.server_idx, self.device, self.agent_role)
 
         try:
             while not self.ctx.stop_event.is_set():
-                # 1) Sync weights if learner has updated
+                # 1) Sync weights
                 t0 = time.monotonic()
-                self.param_client.ensure_updated(self.policy)
+                if self.agent_role == 0:
+                    self.param_client.ensure_updated(self.policy)
+                else:
+                    self._opp_batch_counter += 1
+                    if self._opp_batch_counter >= self._opp_refresh_interval:
+                        snap = self._snapshot_pool.sample_random()
+                        if snap:
+                            self._snapshot_pool.load_into(snap, self.policy)
+                        self._opp_batch_counter = 0
                 t1 = time.monotonic()
                 self.prof.add("weight_sync", t1 - t0)
 
@@ -244,27 +273,29 @@ class InferenceServer:
         actions = out["action"] if self.device.type == "cpu" else out["action"].cpu()
         self._act_np[flat_idxs] = actions.numpy()
 
-        if "logp" in out:
-            logps = out["logp"] if self.device.type == "cpu" else out["logp"].cpu()
-            self._logp_np[flat_idxs] = logps.numpy()
+        # Training agent (role 0): scatter logp, value, logits, rnn state
+        if self.agent_role == 0:
+            if "logp" in out:
+                logps = out["logp"] if self.device.type == "cpu" else out["logp"].cpu()
+                self._logp_np[flat_idxs] = logps.numpy()
 
-        if "value" in out:
-            values = out["value"] if self.device.type == "cpu" else out["value"].cpu()
-            self._val_np[flat_idxs] = values.numpy()
+            if "value" in out:
+                values = out["value"] if self.device.type == "cpu" else out["value"].cpu()
+                self._val_np[flat_idxs] = values.numpy()
 
-        if "action_logits" in out and self._logits_np is not None:
-            al = out["action_logits"] if self.device.type == "cpu" else out["action_logits"].cpu()
-            self._logits_np[flat_idxs] = al.numpy()
+            if "action_logits" in out and self._logits_np is not None:
+                al = out["action_logits"] if self.device.type == "cpu" else out["action_logits"].cpu()
+                self._logits_np[flat_idxs] = al.numpy()
 
-        if self.use_lstm and "rnn_state" in out:
-            h_out, c_out = out["rnn_state"]
-            if self.device.type != "cpu":
-                h_out, c_out = h_out.cpu(), c_out.cpu()
-            h_out = h_out.squeeze(0)  # [N, hidden]
-            c_out = c_out.squeeze(0)
-            if self._rnn_h_np is not None:
-                self._rnn_h_np[flat_idxs] = h_out.numpy()
-                self._rnn_c_np[flat_idxs] = c_out.numpy()
+            if self.use_lstm and "rnn_state" in out:
+                h_out, c_out = out["rnn_state"]
+                if self.device.type != "cpu":
+                    h_out, c_out = h_out.cpu(), c_out.cpu()
+                h_out = h_out.squeeze(0)  # [N, hidden]
+                c_out = c_out.squeeze(0)
+                if self._rnn_h_np is not None:
+                    self._rnn_h_np[flat_idxs] = h_out.numpy()
+                    self._rnn_c_np[flat_idxs] = c_out.numpy()
 
         t_scatter = time.monotonic()
         self.prof.add("scatter", t_scatter - t_fwd)
@@ -279,7 +310,10 @@ class InferenceServer:
         """VALUE-only requests (bootstrap at trajectory boundary).
 
         reqs: Nx2 int32 array [flat_idx, op]
+        Only called for training agent (role 0).
         """
+        if self.agent_role != 0:
+            return
         flat_idxs = reqs[:, 0]
         inputs = self._gather_obs(flat_idxs)
 
@@ -290,10 +324,10 @@ class InferenceServer:
         self._flags_np[flat_idxs] = 1
 
 
-def main(ctx, logger_queue, server_idx: int = 0) -> None:
+def main(ctx, logger_queue, server_idx: int | str = 0, agent_role: int = 0) -> None:
     child_sig_setup()
     child_logging_setup()
     child_attach_logger(logger_queue)
-    logging.info("[inference:%d] starting", server_idx)
-    InferenceServer(ctx, server_idx=server_idx).serve()
-    logging.info("[inference:%d] stopped", server_idx)
+    logging.info("[inference:%s] starting (role=%d)", server_idx, agent_role)
+    InferenceServer(ctx, server_idx=server_idx, agent_role=agent_role).serve()
+    logging.info("[inference:%s] stopped", server_idx)
