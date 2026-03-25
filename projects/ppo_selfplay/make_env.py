@@ -26,6 +26,8 @@ class MultiAgentWrapper(gym.Env):
     Standard Gymnasium interface is for agent 0 only. Other agents' I/O goes through
     ``agent_obs`` (read) and ``agent_actions`` (write) attributes.
 
+    No auto-reset on termination: the caller (RolloutWorker) handles episode resets.
+
     This initial implementation runs N independent envs (no physical interaction).
     Replace ``_inner_reset`` / ``_inner_step`` for envs where agents interact.
     """
@@ -79,9 +81,6 @@ class MultiAgentWrapper(gym.Env):
         # Any agent terminated → episode is over for all
         any_term = any(r[2] for r in results)
         any_trunc = any(r[3] for r in results)
-        if any_term or any_trunc:
-            # Reset all envs together (keeps them in sync)
-            self.reset()
 
         return self.agent_obs[0], float(rew_0), any_term, any_trunc, info_0
 

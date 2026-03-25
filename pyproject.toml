@@ -1,11 +1,30 @@
-[build-system]
-requires = ["setuptools>=68"]
-build-backend = "setuptools.build_meta"
-
 [project]
 name = "beastrand"
 version = "0.1.0"
 requires-python = ">=3.10"
+dependencies = [
+    "torch>=2.0",
+    "numpy>=1.24",
+    "gymnasium>=1.0",
+    "pyzmq>=25.0",
+    "tyro>=0.5",
+    "tensorboard>=2.14",
+    "onnxscript>=0.1",
+]
+
+[project.optional-dependencies]
+tennis = [
+    "pettingzoo[atari]>=1.24",
+    "supersuit>=3.9",
+    "autorom[accept-rom-license]>=0.6",
+]
+dev = [
+    "pytest>=7.0",
+]
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
 
 [tool.setuptools.packages.find]
 where = ["."]
