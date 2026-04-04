@@ -30,8 +30,11 @@ from beastrand.strandbus.strandbus import StrandBus
 from beastrand.utils.import_utils import get_object_from_path
 from beastrand.utils.model_sharing import ParameterClient
 
-# Message format: flat_idx (i), op (i)  — 8 bytes
-REQ_FMT = "<ii"
+# Message format: flat_idx (i), op (i), agent_slot (i)
+#   agent_slot = 0 for the training agent
+#   agent_slot = 1..N-1 for latest-self-play opponent agents served by the
+#   training-policy InferenceServer
+REQ_FMT = "<iii"
 REQ_SIZE = struct.calcsize(REQ_FMT)  # = 8
 
 OP_ACT = 0
@@ -65,6 +68,7 @@ class InferenceServer:
         self.infer_val: Optional[torch.Tensor] = None
         self.infer_mask: Optional[torch.Tensor] = None
         self.infer_action_logits: Optional[torch.Tensor] = None
+        self.latest_policy_infer = []
 
         # Pre-cached numpy views (set by serve(), zero-copy into shared tensors)
         self._obs_np: Optional[np.ndarray] = None
@@ -76,6 +80,9 @@ class InferenceServer:
         self._flags_np: Optional[np.ndarray] = None
         self._rnn_h_np: Optional[np.ndarray] = None
         self._rnn_c_np: Optional[np.ndarray] = None
+        self._latest_obs_np: list[np.ndarray] = []
+        self._latest_act_np: list[np.ndarray] = []
+        self._latest_flags_np: list[np.ndarray] = []
 
         # -- ZMQ (only for receiving requests, no reply sockets) --
         self.bus = StrandBus()
@@ -104,10 +111,11 @@ class InferenceServer:
             self.infer_val = buf.infer_val
             self.infer_mask = buf.infer_mask
             self.infer_action_logits = buf.infer_action_logits
+            self.latest_policy_infer = buf.latest_policy_infer
             self.param_client = ParameterClient(self.ctx.param_server)
         else:
             # Non-training agent: minimal buffers (obs, act, ready_flags only)
-            extra = buf.extra_infer[self.agent_role - 1]
+            extra = buf.snapshot_infer[self.agent_role - 1]
             self.infer_obs = extra["obs"]
             self.infer_act = extra["act"]
             self.ready_flags = extra["ready_flags"]
@@ -121,6 +129,10 @@ class InferenceServer:
         self._obs_np = self.infer_obs.numpy()
         self._act_np = self.infer_act.numpy()
         self._flags_np = self.ready_flags.numpy()
+        if self.agent_role == 0:
+            self._latest_obs_np = [e["obs"].numpy() for e in self.latest_policy_infer]
+            self._latest_act_np = [e["act"].numpy() for e in self.latest_policy_infer]
+            self._latest_flags_np = [e["ready_flags"].numpy() for e in self.latest_policy_infer]
         if self.agent_role == 0:
             self._logp_np = self.infer_logp.numpy()
             self._val_np = self.infer_val.numpy()
@@ -193,13 +205,13 @@ class InferenceServer:
     # ------------------------------------------------------------------
 
     def _parse_requests_fast(self, raw_msgs: List[bytes]) -> np.ndarray:
-        """Parse raw ZMQ messages into Nx2 int32 array: [flat_idx, op]."""
+        """Parse raw ZMQ messages into Nx3 int32 array: [flat_idx, op, agent_slot]."""
         buf = b"".join(raw_msgs)
         total_bytes = len(buf)
         if total_bytes == 0 or total_bytes % REQ_SIZE != 0:
-            return np.empty((0, 2), dtype=np.int32)
+            return np.empty((0, 3), dtype=np.int32)
         n = total_bytes // REQ_SIZE
-        return np.frombuffer(buf, dtype=np.int32).reshape(n, 2)
+        return np.frombuffer(buf, dtype=np.int32).reshape(n, 3)
 
     # ------------------------------------------------------------------
     # Batched inference
@@ -216,14 +228,20 @@ class InferenceServer:
         if val_mask.any():
             self._run_value(requests[val_mask])
 
-    def _gather_obs(self, flat_idxs: np.ndarray) -> Dict[str, Any]:
-        """Gather obs from pre-cached numpy views using 1D int32 indexing.
-
-        No astype conversion: flat_idxs is int32 from the ZMQ message, and
-        numpy fancy indexing accepts int32 natively. Fancy indexing copies
-        the selected rows; torch.from_numpy then wraps that copy zero-copy.
-        """
-        obs_np = self._obs_np[flat_idxs]          # int32 fancy index, copies selected rows
+    def _gather_obs(self, reqs: np.ndarray) -> Dict[str, Any]:
+        """Gather obs for a mixed batch of primary/latest-self-play agents."""
+        flat_idxs = reqs[:, 0]
+        agent_slots = reqs[:, 2]
+        if self.agent_role == 0 and len(self._latest_obs_np) > 0 and np.any(agent_slots != 0):
+            obs_rows = []
+            for flat_idx, agent_slot in zip(flat_idxs.tolist(), agent_slots.tolist()):
+                if agent_slot == 0:
+                    obs_rows.append(self._obs_np[flat_idx])
+                else:
+                    obs_rows.append(self._latest_obs_np[agent_slot - 1][flat_idx])
+            obs_np = np.stack(obs_rows, axis=0)
+        else:
+            obs_np = self._obs_np[flat_idxs]
         obs_batch = torch.from_numpy(obs_np)       # zero-copy wrap of the copy
         if self.device.type != "cpu":
             obs_batch = obs_batch.to(self.device)
@@ -253,14 +271,15 @@ class InferenceServer:
     def _run_act(self, reqs: np.ndarray) -> None:
         """Gather obs -> forward -> scatter to infer_* buffers -> set flags.
 
-        reqs: Nx2 int32 array [flat_idx, op]
+        reqs: Nx3 int32 array [flat_idx, op, agent_slot]
         """
         t_start = time.monotonic()
 
-        flat_idxs = reqs[:, 0]  # int32, used directly for numpy indexing
+        flat_idxs = reqs[:, 0]
+        agent_slots = reqs[:, 2]
 
         # Vectorized gather via pre-cached numpy views (no astype, no allocation)
-        inputs = self._gather_obs(flat_idxs)
+        inputs = self._gather_obs(reqs)
         t_gather = time.monotonic()
         self.prof.add("gather_obs", t_gather - t_start)
 
@@ -271,21 +290,31 @@ class InferenceServer:
 
         # --- Scatter results via numpy (int32 native, no astype) ---
         actions = out["action"] if self.device.type == "cpu" else out["action"].cpu()
-        self._act_np[flat_idxs] = actions.numpy()
+        actions_np = actions.numpy()
+        if self.agent_role == 0 and len(self._latest_act_np) > 0 and np.any(agent_slots != 0):
+            for i, (flat_idx, agent_slot) in enumerate(zip(flat_idxs.tolist(), agent_slots.tolist())):
+                if agent_slot == 0:
+                    self._act_np[flat_idx] = actions_np[i]
+                else:
+                    self._latest_act_np[agent_slot - 1][flat_idx] = actions_np[i]
+        else:
+            self._act_np[flat_idxs] = actions_np
 
         # Training agent (role 0): scatter logp, value, logits, rnn state
-        if self.agent_role == 0:
+        primary_mask = agent_slots == 0
+        if self.agent_role == 0 and primary_mask.any():
+            primary_flat_idxs = flat_idxs[primary_mask]
             if "logp" in out:
                 logps = out["logp"] if self.device.type == "cpu" else out["logp"].cpu()
-                self._logp_np[flat_idxs] = logps.numpy()
+                self._logp_np[primary_flat_idxs] = logps.numpy()[primary_mask]
 
             if "value" in out:
                 values = out["value"] if self.device.type == "cpu" else out["value"].cpu()
-                self._val_np[flat_idxs] = values.numpy()
+                self._val_np[primary_flat_idxs] = values.numpy()[primary_mask]
 
             if "action_logits" in out and self._logits_np is not None:
                 al = out["action_logits"] if self.device.type == "cpu" else out["action_logits"].cpu()
-                self._logits_np[flat_idxs] = al.numpy()
+                self._logits_np[primary_flat_idxs] = al.numpy()[primary_mask]
 
             if self.use_lstm and "rnn_state" in out:
                 h_out, c_out = out["rnn_state"]
@@ -294,14 +323,21 @@ class InferenceServer:
                 h_out = h_out.squeeze(0)  # [N, hidden]
                 c_out = c_out.squeeze(0)
                 if self._rnn_h_np is not None:
-                    self._rnn_h_np[flat_idxs] = h_out.numpy()
-                    self._rnn_c_np[flat_idxs] = c_out.numpy()
+                    self._rnn_h_np[primary_flat_idxs] = h_out.numpy()[primary_mask]
+                    self._rnn_c_np[primary_flat_idxs] = c_out.numpy()[primary_mask]
 
         t_scatter = time.monotonic()
         self.prof.add("scatter", t_scatter - t_fwd)
 
         # Set ready flags (numpy int32 scatter)
-        self._flags_np[flat_idxs] = 1
+        if self.agent_role == 0 and len(self._latest_flags_np) > 0 and np.any(agent_slots != 0):
+            for flat_idx, agent_slot in zip(flat_idxs.tolist(), agent_slots.tolist()):
+                if agent_slot == 0:
+                    self._flags_np[flat_idx] = 1
+                else:
+                    self._latest_flags_np[agent_slot - 1][flat_idx] = 1
+        else:
+            self._flags_np[flat_idxs] = 1
 
         t_signal = time.monotonic()
         self.prof.add("set_flags", t_signal - t_scatter)
@@ -309,13 +345,13 @@ class InferenceServer:
     def _run_value(self, reqs: np.ndarray) -> None:
         """VALUE-only requests (bootstrap at trajectory boundary).
 
-        reqs: Nx2 int32 array [flat_idx, op]
+        reqs: Nx3 int32 array [flat_idx, op, agent_slot]
         Only called for training agent (role 0).
         """
         if self.agent_role != 0:
             return
         flat_idxs = reqs[:, 0]
-        inputs = self._gather_obs(flat_idxs)
+        inputs = self._gather_obs(reqs)
 
         v = self.policy.value(inputs)
         values = v if self.device.type == "cpu" else v.cpu()

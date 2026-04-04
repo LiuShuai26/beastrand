@@ -34,8 +34,8 @@ from beastrand.nodes.logger import child_attach_logger, log_scalar
 from beastrand.strandbus.strandbus import StrandBus
 
 # Must match inference_server.py
-REQ_FMT = "<ii"
-REQ_SIZE = struct.calcsize(REQ_FMT)  # = 8 bytes
+REQ_FMT = "<iii"
+REQ_SIZE = struct.calcsize(REQ_FMT)  # = 12 bytes
 OP_ACT = 0
 OP_VALUE = 1
 
@@ -53,6 +53,7 @@ class EnvState:
     episode_length: int = 0
     done: bool = False
     extra_obs: list = field(default_factory=list)  # agents 1+ obs (multi-agent only)
+    opponent_mode: str = "snapshot"
 
 
 class RolloutWorker:
@@ -64,10 +65,15 @@ class RolloutWorker:
         self.T = args.rollout
         self.num_envs = getattr(args, "num_envs_per_worker", 2)
         self.split_depth = ctx.buffer_mgr.split_depth
+        self.self_play_mode = getattr(args, "self_play_mode", "snapshot")
+        self.latest_self_play_ratio = float(getattr(args, "latest_self_play_ratio", 0.0))
+        self._self_play_rng = np.random.RandomState(args.seed + worker_idx * 9973 + 17)
 
         # Detect LSTM from schema (rnn_state_h present in traj_tensors)
         self.use_lstm = "rnn_state_h" in ctx.buffer_mgr.traj_tensors
         self.bootstrap_value = bool(args.bootstrap_value)
+        if self.use_lstm and self.self_play_mode == "latest" and getattr(args, "num_agents", 1) > 1:
+            raise NotImplementedError("latest self-play batching does not support LSTM policies yet")
 
         # Shared tensors from BufferMgr
         self.traj_tensors = ctx.buffer_mgr.traj_tensors
@@ -95,11 +101,16 @@ class RolloutWorker:
         self._env_split = np.zeros(self.num_envs, dtype=np.int32)
 
         # --- Multi-agent: per-agent inference buffers ---
-        # Agent 0 uses existing buffers above. Agents 1+ use extra_infer.
+        # Agent 0 uses existing buffers above.
+        # Agents 1+ use either latest_policy_infer (same training policy) or
+        # snapshot_infer (dedicated frozen opponent servers), depending on mode.
         self.num_agents = ctx.buffer_mgr.num_agents
-        self._extra_infer_obs: List[torch.Tensor] = [e["obs"] for e in ctx.buffer_mgr.extra_infer]
-        self._extra_infer_act: List[torch.Tensor] = [e["act"] for e in ctx.buffer_mgr.extra_infer]
-        self._extra_ready_flags: List[torch.Tensor] = [e["ready_flags"] for e in ctx.buffer_mgr.extra_infer]
+        self._latest_extra_obs: List[torch.Tensor] = [e["obs"] for e in ctx.buffer_mgr.latest_policy_infer]
+        self._latest_extra_act: List[torch.Tensor] = [e["act"] for e in ctx.buffer_mgr.latest_policy_infer]
+        self._latest_ready_flags: List[torch.Tensor] = [e["ready_flags"] for e in ctx.buffer_mgr.latest_policy_infer]
+        self._snapshot_extra_obs: List[torch.Tensor] = [e["obs"] for e in ctx.buffer_mgr.snapshot_infer]
+        self._snapshot_extra_act: List[torch.Tensor] = [e["act"] for e in ctx.buffer_mgr.snapshot_infer]
+        self._snapshot_ready_flags: List[torch.Tensor] = [e["ready_flags"] for e in ctx.buffer_mgr.snapshot_infer]
 
         # --- ZMQ (only for sending requests + filled trajectories) ---
         self.bus = StrandBus()
@@ -111,9 +122,10 @@ class RolloutWorker:
         self.bus.open("filled_out", mode="push", endpoint=f"{base}/data.filled.in", bind=False)
         # Per-agent ZMQ sockets for agents 1+ (each connects to its own IS)
         # Endpoint must match IS bind: infer_{server_idx}.req where server_idx="agent_{a}"
-        for a in range(1, self.num_agents):
-            self.bus.open(f"agent_{a}_req", mode="push",
-                          endpoint=f"{base}/infer_agent_{a}.req", bind=False)
+        if self.self_play_mode in {"snapshot", "mixed"}:
+            for a in range(1, self.num_agents):
+                self.bus.open(f"agent_{a}_req", mode="push",
+                              endpoint=f"{base}/infer_agent_{a}.req", bind=False)
 
         # --- Profiling (only worker 0) & episode stats (all workers) ---
         self.prof = ProfileAccum(interval=5.0) if worker_idx == 0 else None
@@ -157,7 +169,17 @@ class RolloutWorker:
             self.envs.append(EnvState(
                 env=env, obs=obs, traj_idx=traj_idx, env_idx=ei,
                 extra_obs=extra_obs,
+                opponent_mode=self._sample_opponent_mode(),
             ))
+
+    def _sample_opponent_mode(self) -> str:
+        if self.num_agents <= 1:
+            return "snapshot"
+        if self.self_play_mode == "latest":
+            return "latest"
+        if self.self_play_mode == "snapshot":
+            return "snapshot"
+        return "latest" if self._self_play_rng.rand() < self.latest_self_play_ratio else "snapshot"
 
     # ------------------------------------------------------------------
     # Core loop
@@ -194,13 +216,15 @@ class RolloutWorker:
                 if not self.ready_flags[flat_idx]:
                     continue
                 if self.num_agents > 1:
-                    if not all(f[flat_idx] for f in self._extra_ready_flags):
+                    extra_ready_flags = self._latest_ready_flags if es.opponent_mode == "latest" else self._snapshot_ready_flags
+                    if not all(f[flat_idx] for f in extra_ready_flags):
                         continue
 
                 # Clear all ready flags
                 self.ready_flags[flat_idx] = 0
                 if self.num_agents > 1:
-                    for f in self._extra_ready_flags:
+                    extra_ready_flags = self._latest_ready_flags if es.opponent_mode == "latest" else self._snapshot_ready_flags
+                    for f in extra_ready_flags:
                         f[flat_idx] = 0
 
                 t1 = time.monotonic()
@@ -229,6 +253,9 @@ class RolloutWorker:
     # ------------------------------------------------------------------
 
     def _send_request(self, es: EnvState, op: int) -> None:
+        self._send_request_to_agent_slot(es, op, agent_slot=0)
+
+    def _send_request_to_agent_slot(self, es: EnvState, op: int, agent_slot: int) -> None:
         wi = self.worker_idx
         ei = es.env_idx
         flat_idx = wi * self.num_envs + ei
@@ -253,7 +280,7 @@ class RolloutWorker:
             if "mask" in self.traj_tensors:
                 self.traj_tensors["mask"][ti, s] = mask_val
 
-        msg = struct.pack(REQ_FMT, flat_idx, op)
+        msg = struct.pack(REQ_FMT, flat_idx, op, agent_slot)
         self.bus.send("infer_req", msg)
         es.pending = True
 
@@ -264,9 +291,14 @@ class RolloutWorker:
         flat_idx = self.worker_idx * self.num_envs + es.env_idx
         for a_offset, extra_obs in enumerate(es.extra_obs):
             obs_t = torch.from_numpy(np.asarray(extra_obs, dtype=np.float32))
-            self._extra_infer_obs[a_offset][flat_idx] = obs_t
-            msg = struct.pack(REQ_FMT, flat_idx, op)
-            self.bus.send(f"agent_{a_offset + 1}_req", msg)
+            if es.opponent_mode == "latest":
+                self._latest_extra_obs[a_offset][flat_idx] = obs_t
+                msg = struct.pack(REQ_FMT, flat_idx, op, a_offset + 1)
+                self.bus.send("infer_req", msg)
+            else:
+                self._snapshot_extra_obs[a_offset][flat_idx] = obs_t
+                msg = struct.pack(REQ_FMT, flat_idx, op, 0)
+                self.bus.send(f"agent_{a_offset + 1}_req", msg)
 
     # ------------------------------------------------------------------
     # Advance a single environment
@@ -296,8 +328,9 @@ class RolloutWorker:
 
         # Multi-agent: set other agents' actions on env via side-channel
         if self.num_agents > 1 and hasattr(es.env, "agent_actions"):
-            for a_offset in range(len(self._extra_infer_act)):
-                act = self._extra_infer_act[a_offset][flat_idx]
+            extra_acts = self._latest_extra_act if es.opponent_mode == "latest" else self._snapshot_extra_act
+            for a_offset in range(len(extra_acts)):
+                act = extra_acts[a_offset][flat_idx]
                 if self.act_discrete:
                     es.env.agent_actions[a_offset + 1] = int(act[0].item())
                 else:
@@ -335,6 +368,7 @@ class RolloutWorker:
             next_obs, _ = es.env.reset()
             es.episode_reward = 0.0
             es.episode_length = 0
+            es.opponent_mode = self._sample_opponent_mode()
 
             # Zero LSTM live state on episode reset.
             if self.use_lstm and self._rnn_live_h is not None:
@@ -449,7 +483,7 @@ class RolloutWorker:
         # Sync mask so IS uses the correct LSTM reset boundary
         if self.use_lstm:
             self._infer_mask[flat_idx] = 0.0 if es.done else 1.0
-        msg = struct.pack(REQ_FMT, flat_idx, OP_VALUE)
+        msg = struct.pack(REQ_FMT, flat_idx, OP_VALUE, 0)
         self.bus.send("infer_req", msg)
         es.pending = True
 

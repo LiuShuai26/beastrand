@@ -97,24 +97,42 @@ class PPOAlgorithm:
 
         # 2. ONNX export (actor only: body → deterministic action, always overwrite latest)
         try:
+            trunk = getattr(policy, "body", None)
+            preprocess = None
+            if trunk is None:
+                trunk = getattr(policy, "encoder", None)
+                preprocess_fn = getattr(policy, "_preprocess", None)
+                if trunk is not None and preprocess_fn is not None:
+                    preprocess = preprocess_fn
+            if trunk is None:
+                raise AttributeError("Policy has no exportable trunk (expected 'body' or 'encoder')")
+
+            discrete = False
             if hasattr(policy.dist_head, "mean"):
                 action_head = policy.dist_head.mean
             elif hasattr(policy.dist_head, "logits"):
                 action_head = policy.dist_head.logits
+                discrete = True
             else:
                 raise AttributeError("Unknown dist_head type for ONNX export")
-            actor = ActorForExport(policy.body, action_head)
+
+            actor = ActorForExport(
+                trunk,
+                action_head,
+                preprocess=preprocess,
+                discrete=discrete,
+            )
             actor.eval()
-            obs_dim = policy.obs_dim
-            dummy = torch.zeros(1, obs_dim, device=self.device)
+            obs_shape = tuple(int(x) for x in getattr(policy.cfg, "obs_shape", (policy.obs_dim,)))
+            dummy = torch.zeros((1, *obs_shape), device=self.device)
             onnx_path = os.path.join(save_dir, "actor.onnx")
             torch.onnx.export(
                 actor,
                 dummy,
                 onnx_path,
                 input_names=["obs"],
-                output_names=["action_mean"],
-                dynamic_axes={"obs": {0: "batch"}, "action_mean": {0: "batch"}},
+                output_names=["action"],
+                dynamic_axes={"obs": {0: "batch"}, "action": {0: "batch"}},
             )
             ensure_single_onnx_file(onnx_path)
             logging.info("saved ONNX actor to %s", onnx_path)
@@ -339,5 +357,4 @@ def ppo_update(
         "num_minibatches": float(n_mb),
         "grad_norm": grad_norm_before.item() if hasattr(grad_norm_before, 'item') else float(grad_norm_before),
     }
-
 

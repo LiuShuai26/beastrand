@@ -22,6 +22,14 @@ class Args:
 
     # --- Multi-agent / Self-play ---
     num_agents: int = field(default=2, metadata={"help": "Agents per env (1=single, 2=self-play)"})
+    self_play_mode: str = field(
+        default="mixed",
+        metadata={"help": "Opponent mode: snapshot | latest | mixed"},
+    )
+    latest_self_play_ratio: float = field(
+        default=0.7,
+        metadata={"help": "When self_play_mode=mixed, probability of using latest-vs-latest for an episode"},
+    )
     opp_refresh_interval: int = field(default=100, metadata={"help": "IS batches between opponent snapshot refresh"})
     snapshot_save_interval: int = field(default=10, metadata={"help": "Policy versions between snapshot saves"})
     max_snapshots: int = field(default=20, metadata={"help": "Max historical snapshots in pool"})
@@ -87,6 +95,10 @@ class Args:
         assert self.total_env_steps > 0
         assert self.num_envs_per_worker > 0
         assert self.num_agents >= 1
+        if self.self_play_mode not in {"snapshot", "latest", "mixed"}:
+            raise ValueError("self_play_mode must be 'snapshot', 'latest', or 'mixed'")
+        if not (0.0 <= self.latest_self_play_ratio <= 1.0):
+            raise ValueError("latest_self_play_ratio must be in [0, 1]")
 
     def __post_init__(self):
         if self.batch_size % self.minibatch_size != 0:

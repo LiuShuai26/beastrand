@@ -222,7 +222,8 @@ class Manager:
 
         # 5b. Multi-agent: save initial snapshot so opponent IS can load immediately
         num_agents = getattr(self.args, "num_agents", 1)
-        if num_agents > 1:
+        self_play_mode = getattr(self.args, "self_play_mode", "snapshot")
+        if num_agents > 1 and self_play_mode in {"snapshot", "mixed"}:
             import os
             snap_dir = os.path.join(
                 getattr(self.args, "logdir", "train_logs"),
@@ -262,7 +263,7 @@ class Manager:
             self._wait_ready(f"inference_server_{i}")
 
         # Phase 3b: Per-agent InferenceServers for non-training agents (self-play)
-        if num_agents > 1:
+        if num_agents > 1 and self_play_mode in {"snapshot", "mixed"}:
             for a in range(1, num_agents):
                 name = f"inference_server_agent_{a}"
                 self.ctx.ready_events[name] = mp.Event()

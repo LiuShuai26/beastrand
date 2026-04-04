@@ -133,14 +133,21 @@ class BufferMgr:
 
         # --- Extra agent inference buffers (multi-agent / self-play) ------
         # Agent 0 uses the buffers above (full: obs, act, logp, val, etc.).
-        # Agents 1..N-1 need only minimal buffers (obs, act, ready_flags)
-        # since their trajectories are never collected for training.
-        # When num_agents=1 (default), extra_infer is empty → zero overhead.
+        # Agents 1..N-1 use one of two paths:
+        #   - latest_policy_infer: served by the training-policy IS (latest self-play)
+        #   - snapshot_infer: served by dedicated snapshot opponent IS processes
+        # When num_agents=1 (default), both lists are empty → zero overhead.
         _args = getattr(cfg, "args", cfg)
         self.num_agents: int = getattr(_args, "num_agents", 1)
-        self.extra_infer: List[Dict[str, torch.Tensor]] = []
+        self.latest_policy_infer: List[Dict[str, torch.Tensor]] = []
+        self.snapshot_infer: List[Dict[str, torch.Tensor]] = []
         for _ in range(1, self.num_agents):
-            self.extra_infer.append({
+            self.latest_policy_infer.append({
+                "obs": torch.zeros(WE, *obs_shape).share_memory_(),
+                "act": torch.zeros(WE, *act_shape).share_memory_(),
+                "ready_flags": torch.zeros(WE, dtype=torch.int32).share_memory_(),
+            })
+            self.snapshot_infer.append({
                 "obs": torch.zeros(WE, *obs_shape).share_memory_(),
                 "act": torch.zeros(WE, *act_shape).share_memory_(),
                 "ready_flags": torch.zeros(WE, dtype=torch.int32).share_memory_(),

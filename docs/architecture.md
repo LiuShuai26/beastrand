@@ -54,6 +54,13 @@ Workers cycle `split_idx` each trajectory. The Learner releases the slot via `sp
 
 **Inference I/O buffers** are separate flat `[W*E, *shape]` shared tensors (`infer_obs`, `infer_act`, `infer_logp`, `infer_val`). Workers write current obs here before the ZMQ request; IS reads/writes these compact buffers instead of the large trajectory tensors. See [inference-hotpath-optimization.md](design/inference-hotpath-optimization.md) for the full optimization history.
 
+**Self-play buffers**: when `num_agents > 1`, BufferMgr allocates two extra per-opponent-agent buffer families:
+
+- `latest_policy_infer`: obs/act/ready buffers served by the training-policy InferenceServer. Used for `latest` self-play, where agent 0 and agent 1+ are evaluated by the same current policy in one batched forward pass.
+- `snapshot_infer`: obs/act/ready buffers served by dedicated frozen-opponent InferenceServers. Used for `snapshot` self-play, where the opponent is sampled from the snapshot pool.
+
+When `self_play_mode="mixed"`, Workers route each episode to one of these two paths at reset time and keep that choice fixed for the full episode.
+
 **Tensor layout** is defined by DataRecord (pluggable per algorithm). BufferMgr calls `DataRecord.alloc_specs()` to learn what fields to allocate. This way BufferMgr doesn't know about algorithm-specific fields (e.g., PPO-AMP's `amp_transition`).
 
 ### ParameterServer
@@ -84,8 +91,8 @@ Worker                    InferenceServer              Shared Memory
   │                            │                           │
   ├─ write obs[ti,s] ──────────────────────────────────► traj_tensors["obs"]
   ├─ write infer_obs[flat_idx] ────────────────────────► infer_obs [W*E, obs_dim]
-  ├─ send 8B struct ─────────►│                           │
-  │  (flat_idx, op)            │                           │
+  ├─ send 12B struct ────────►│                           │
+  │  (flat_idx, op, agent)     │                           │
   │                            ├─ gather obs ◄──────── infer_obs (numpy 1D)
   │                            ├─ GPU forward (batched)    │
   │                            ├─ scatter action ────────► infer_act [W*E, act_dim]
@@ -99,7 +106,11 @@ Worker                    InferenceServer              Shared Memory
   └─ write reward, done ───────────────────────────────► traj_tensors["reward"]...
 ```
 
-**Zero pickle, zero serialization.** ZMQ only carries 8-byte `(flat_idx, op)` messages.
+**Zero pickle, zero serialization.** ZMQ only carries a 12-byte `(flat_idx, op, agent_slot)` header:
+
+- `flat_idx`: worker/env slot
+- `op`: ACT or VALUE request
+- `agent_slot`: `0` for the training agent, `1..N-1` for `latest` self-play opponents served by the same InferenceServer
 
 ### Trajectory Completion Path
 
@@ -184,7 +195,62 @@ After forward returns:
 
 Higher load → more requests queue up → bigger batches → better GPU utilization. Positive feedback loop.
 
-**Request parsing**: All messages are concatenated into one `bytes` buffer, then `np.frombuffer(...).reshape(N, 2)` parses them in one operation (Nx2 int32: `[flat_idx, op]`). No per-message `struct.unpack`. Numpy pre-cached views eliminate `astype(int64)` and `torch.from_numpy` overhead on the gather path.
+**Request parsing**: All messages are concatenated into one `bytes` buffer, then `np.frombuffer(...).reshape(N, 3)` parses them in one operation (Nx3 int32: `[flat_idx, op, agent_slot]`). No per-message `struct.unpack`. Numpy pre-cached views eliminate `astype(int64)` and `torch.from_numpy` overhead on the gather path.
+
+## Self-Play Data Flow
+
+Self-play is project-level behavior layered on top of the same worker / learner / inference topology. The framework supports three opponent modes:
+
+- `latest`: both sides use the current training policy
+- `snapshot`: the learning agent uses the current policy; the opponent uses a frozen historical snapshot
+- `mixed`: per episode, sample `latest` with probability `latest_self_play_ratio` and `snapshot` otherwise
+
+### Episode-Level Opponent Sampling
+
+Opponent selection happens in the Worker, not inside the InferenceServer. Each env chooses its opponent mode at reset time and keeps that mode fixed until the episode ends.
+
+This is important for PPO correctness: a trajectory should correspond to interaction against one stationary opponent policy, not an opponent that changes midway through the rollout.
+
+### `latest` Self-Play
+
+In `latest` mode, both sides' observations are sent to the training-policy InferenceServer:
+
+```
+Worker
+  ├─ agent0 obs ─► infer_obs
+  ├─ agent1 obs ─► latest_policy_infer[0].obs
+  ├─ send (flat, ACT, 0) ─────► training IS
+  └─ send (flat, ACT, 1) ─────► training IS
+
+InferenceServer
+  ├─ gather mixed batch: [agent0 rows, agent1 rows, ...]
+  ├─ single forward pass on current policy
+  ├─ scatter agent0 action/logp/value → infer_*
+  └─ scatter agent1 action           → latest_policy_infer[*]
+```
+
+The key property is that both sides are evaluated by the **same policy version** in one batched forward pass. This avoids policy skew between the two sides and gives the expected "latest-vs-latest" self-play semantics.
+
+### `snapshot` Self-Play
+
+In `snapshot` mode, agent 0 still uses the training-policy InferenceServer, but opponent agents use dedicated snapshot InferenceServers that periodically load frozen checkpoints from the snapshot pool.
+
+```
+agent0 obs ─► training IS
+agent1 obs ─► snapshot IS
+```
+
+Only agent 0's trajectory is recorded for learning. Opponent actions affect the environment but do not contribute log-probs, values, or learner batches.
+
+### `mixed` Self-Play
+
+`mixed` mode combines the two paths above:
+
+- sample `latest` with probability `latest_self_play_ratio`
+- sample `snapshot` with probability `1 - latest_self_play_ratio`
+- hold that choice fixed for the full episode
+
+Example: with `latest_self_play_ratio=0.7`, approximately 70% of episodes are `latest-vs-latest` and 30% are played against frozen historical opponents.
 
 ## Module System
 

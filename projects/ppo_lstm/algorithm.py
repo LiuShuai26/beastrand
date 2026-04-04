@@ -77,6 +77,39 @@ class PPOLSTMAlgorithm:
         logging.info("saved checkpoint to %s (ONNX export skipped for LSTM)", ckpt_path)
         return ckpt_path
 
+    def load_checkpoint(self, ckpt_path: str, policy: nn.Module) -> int:
+        """Load full training state. Returns env_step.
+
+        Mirrors PPOAlgorithm resume semantics:
+          - restore policy and optimizer state
+          - re-apply current CLI learning_rate after loading optimizer state
+          - restore LR scheduler counter and returns RMS if present
+        """
+        ckpt = torch.load(ckpt_path, map_location=self.device, weights_only=True)
+
+        policy.load_state_dict(ckpt["policy"])
+        logging.info("loaded policy from %s", ckpt_path)
+
+        for k, state in ckpt.get("opt", {}).items():
+            if k in self.opt:
+                self.opt[k].load_state_dict(state)
+
+        for pg in self.opt["opt"].param_groups:
+            pg["lr"] = self.ctx.args.learning_rate
+        self._initial_lr = self.ctx.args.learning_rate
+
+        self._lr_update_count = ckpt.get("lr_update_count", 0)
+
+        if self.returns_rms is not None and "returns_rms" in ckpt:
+            rms = ckpt["returns_rms"]
+            self.returns_rms.mean = rms["mean"]
+            self.returns_rms.var = rms["var"]
+            self.returns_rms.count = rms["count"]
+
+        env_step = ckpt.get("env_step", 0)
+        logging.info("resumed from env_step=%d", env_step)
+        return env_step
+
 
 def _validate_recurrence(ctx, N: int) -> int:
     recurrence = int(getattr(ctx.args, "recurrence", -1))

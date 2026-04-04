@@ -9,15 +9,29 @@ import torch.nn as nn
 
 
 class ActorForExport(nn.Module):
-    """Minimal actor (body + mean head) for ONNX export."""
+    """Generic actor exporter with optional preprocessing and discrete support."""
 
-    def __init__(self, body: nn.Module, mean_head: nn.Module):
+    def __init__(
+        self,
+        trunk: nn.Module,
+        action_head: nn.Module,
+        *,
+        preprocess: nn.Module | None = None,
+        discrete: bool = False,
+    ):
         super().__init__()
-        self.body = body
-        self.mean_head = mean_head
+        self.preprocess = preprocess
+        self.trunk = trunk
+        self.action_head = action_head
+        self.discrete = discrete
 
     def forward(self, obs: torch.Tensor) -> torch.Tensor:
-        return self.mean_head(self.body(obs))
+        if self.preprocess is not None:
+            obs = self.preprocess(obs)
+        logits_or_mean = self.action_head(self.trunk(obs))
+        if self.discrete:
+            return logits_or_mean.argmax(dim=-1, keepdim=True)
+        return logits_or_mean
 
 
 def ensure_single_onnx_file(onnx_path: str) -> None:
