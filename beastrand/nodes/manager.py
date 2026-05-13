@@ -57,7 +57,11 @@ def probe_env(env_id: str, seed: int = 0,
         _make_env = get_object_from_path(make_env_path)
         env = _make_env(env_id, seed=seed, args=args)
     else:
-        env = gym.make(env_id)
+        # Match the default factory workers use, so probe sees the same
+        # FlattenObservation / RecordEpisodeStatistics / ClipAction wrappers
+        # (Dict obs envs are flattened here too).
+        from beastrand.core.envs.make_env import make_env as _default_make_env
+        env = _default_make_env(env_id, seed=seed, args=args)
     try:
         env.reset(seed=seed)
         obs_space = env.observation_space

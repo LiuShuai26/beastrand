@@ -248,6 +248,12 @@ class RolloutWorker:
                 if report:
                     logging.info(report)
 
+            # Yield the CPU when no env advanced this iteration. Without this
+            # the main loop tight-spins while waiting on inference; matches
+            # the 1ms cadence used by the bootstrap/slot-recycle waits below.
+            if not stepped_any:
+                time.sleep(0.001)
+
     # ------------------------------------------------------------------
     # Send inference request (single env)
     # ------------------------------------------------------------------

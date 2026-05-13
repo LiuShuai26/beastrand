@@ -377,6 +377,67 @@ class TestPPOUpdate:
         with pytest.raises(ValueError, match="empty batch"):
             ppo_update(ctx, policy, opt, batch, torch.device("cpu"))
 
+    def _make_batch(self, N: int, seed: int):
+        rng = np.random.default_rng(seed)
+        return {
+            "obs":  rng.standard_normal((N, 4)).astype(np.float32),
+            "act":  rng.standard_normal((N, 2)).astype(np.float32),
+            "logp": rng.standard_normal(N).astype(np.float32),
+            "adv":  rng.standard_normal(N).astype(np.float32),
+            "ret":  rng.standard_normal(N).astype(np.float32),
+            "val":  rng.standard_normal(N).astype(np.float32),
+        }
+
+    def test_shuffle_minibatches_default_is_sequential(self, setup):
+        """Default config keeps SF-style sequential slicing (no shuffle)."""
+        ctx = _Ctx(rollout=16, minibatch_size=8, train_epochs=1)
+        assert getattr(ctx.args, "shuffle_minibatches", False) is False
+
+    def test_shuffle_minibatches_changes_update(self, setup):
+        """With identical seeds and batches, shuffle=True diverges from shuffle=False."""
+        from copy import deepcopy
+        from beastrand.ppo.policy import PPOPolicy
+
+        def _fresh_policy_and_opt():
+            torch.manual_seed(7)
+
+            class Cfg:
+                obs_shape = (4,)
+                act_shape = (2,)
+                act_kind = "box"
+                act_n = None
+
+                class args:
+                    mlp_layers = [8, 8]
+                    use_lstm = False
+                    normalize_input = False
+
+            p = PPOPolicy(Cfg())
+            o = p.build_optimizers(type("Ctx", (), {"args": type("A", (), {"learning_rate": 1e-3})()})())
+            return p, o
+
+        p_seq, o_seq = _fresh_policy_and_opt()
+        p_shuf, o_shuf = _fresh_policy_and_opt()
+
+        batch = self._make_batch(N=32, seed=11)
+        ctx_seq = _Ctx(rollout=32, minibatch_size=8, train_epochs=2,
+                       normalize_adv=False, shuffle_minibatches=False)
+        ctx_shuf = _Ctx(rollout=32, minibatch_size=8, train_epochs=2,
+                        normalize_adv=False, shuffle_minibatches=True)
+
+        np.random.seed(0)
+        ppo_update(ctx_seq, p_seq, o_seq, deepcopy(batch), torch.device("cpu"))
+        np.random.seed(0)
+        ppo_update(ctx_shuf, p_shuf, o_shuf, deepcopy(batch), torch.device("cpu"))
+
+        # At least one parameter must differ — minibatch order is non-commutative under Adam.
+        any_diff = False
+        for (n1, p1), (n2, p2) in zip(p_seq.named_parameters(), p_shuf.named_parameters()):
+            if not torch.allclose(p1, p2):
+                any_diff = True
+                break
+        assert any_diff, "shuffle_minibatches=True should produce different weights than =False"
+
 
 # ---------------------------------------------------------------------------
 # RunningMeanStd

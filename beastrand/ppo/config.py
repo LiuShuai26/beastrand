@@ -48,6 +48,7 @@ class Args:
     train_epochs: int = field(default=1, metadata={"help": "Training epochs per batch"})
     ppo_clip_range: float = field(default=0.2, metadata={"help": "PPO clip range"})
     ppo_clip_value: float = field(default=1.0, metadata={"help": "PPO value clip range"})
+    shuffle_minibatches: bool = field(default=False, metadata={"help": "Shuffle minibatch order each epoch (default False = SF-style sequential slicing)"})
 
     normalize_adv : bool = field(default=True, metadata={"help": "Normalize advantages"})
     normalize_returns: bool = field(default=True, metadata={"help": "Normalize value targets with running mean/std (SF-style)"})

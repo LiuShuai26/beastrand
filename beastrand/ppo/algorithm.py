@@ -92,7 +92,9 @@ class PPOAlgorithm:
                 "var": float(self.returns_rms.var),
                 "count": float(self.returns_rms.count),
             }
-        torch.save(ckpt, ckpt_path)
+        tmp_path = ckpt_path + ".tmp"
+        torch.save(ckpt, tmp_path)
+        os.replace(tmp_path, ckpt_path)
         logging.info("saved checkpoint to %s", ckpt_path)
 
         # 2. ONNX export (actor only: body → deterministic action, always overwrite latest)
@@ -283,16 +285,21 @@ def ppo_update(
         from beastrand.core.model.distributions import DiagGaussianDistribution
         b_action_logits = data["action_logits"].float()
 
+    shuffle = bool(getattr(ctx.args, "shuffle_minibatches", False))
+    b_inds = np.arange(N)
     n_mb = N / ctx.args.minibatch_size
     for epoch in range(ctx.args.train_epochs):
+        if shuffle:
+            np.random.shuffle(b_inds)
         for start in range(0, N, ctx.args.minibatch_size):
             end = start + ctx.args.minibatch_size
+            mb_inds = b_inds[start:end]
 
-            inputs = {"obs": b_obs[start:end], "action": b_actions[start:end]}
+            inputs = {"obs": b_obs[mb_inds], "action": b_actions[mb_inds]}
 
             eval_out = policy.evaluate_actions(inputs)
             newlogprob, entropy, newvalue = eval_out["logp"], eval_out["entropy"], eval_out["value"]
-            logratio = newlogprob - b_logprobs[start:end]
+            logratio = newlogprob - b_logprobs[mb_inds]
             ratio = torch.clamp(logratio.exp(), 0.05, 20.0)  # SF-style numerical safety clamp
 
             # Approximate KL for monitoring (always computed, cheap)
@@ -300,7 +307,7 @@ def ppo_update(
                 approx_kl = ((ratio - 1) - logratio).mean()
                 clipfracs.append(((ratio - 1.0).abs() > ctx.args.ppo_clip_range).float().mean().item())
 
-            mb_advantages = b_advantages[start:end]
+            mb_advantages = b_advantages[mb_inds]
             if ctx.args.normalize_adv:
                 mb_advantages = normalize_advantages(mb_advantages)
 
@@ -312,13 +319,13 @@ def ppo_update(
             pg_loss = torch.max(pg_loss1, pg_loss2).mean()
 
             newvalue = newvalue.view(-1)
-            v_loss_unclipped = (newvalue - b_returns[start:end]) ** 2
-            v_clipped = b_values[start:end] + torch.clamp(
-                newvalue - b_values[start:end],
+            v_loss_unclipped = (newvalue - b_returns[mb_inds]) ** 2
+            v_clipped = b_values[mb_inds] + torch.clamp(
+                newvalue - b_values[mb_inds],
                 -ctx.args.ppo_clip_value,
                 ctx.args.ppo_clip_value,
             )
-            v_loss_clipped = (v_clipped - b_returns[start:end]) ** 2
+            v_loss_clipped = (v_clipped - b_returns[mb_inds]) ** 2
             v_loss = torch.max(v_loss_unclipped, v_loss_clipped).mean()
 
             entropy_loss = entropy.mean()
@@ -329,7 +336,7 @@ def ppo_update(
                 if has_action_logits and "action_logits" in eval_out:
                     analytical_kl = DiagGaussianDistribution.kl_from_logits(
                         eval_out["action_logits"],        # new policy
-                        b_action_logits[start:end],       # old policy (from buffer)
+                        b_action_logits[mb_inds],         # old policy (from buffer)
                     ).mean()
                     loss = loss + kl_coeff * analytical_kl
                 else:

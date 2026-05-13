@@ -461,7 +461,9 @@ class PPOAMPAlgorithm:
                 "var": float(self.returns_rms.var),
                 "count": float(self.returns_rms.count),
             }
-        torch.save(ckpt, ckpt_path)
+        tmp_path = ckpt_path + ".tmp"
+        torch.save(ckpt, tmp_path)
+        os.replace(tmp_path, ckpt_path)
         logging.info("saved checkpoint to %s", ckpt_path)
 
         # 2. ONNX export (actor only: body → mean action, always overwrite latest)

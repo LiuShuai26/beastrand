@@ -73,7 +73,9 @@ class PPOLSTMAlgorithm:
                 "var": float(self.returns_rms.var),
                 "count": float(self.returns_rms.count),
             }
-        torch.save(ckpt, ckpt_path)
+        tmp_path = ckpt_path + ".tmp"
+        torch.save(ckpt, tmp_path)
+        os.replace(tmp_path, ckpt_path)
         logging.info("saved checkpoint to %s (ONNX export skipped for LSTM)", ckpt_path)
         return ckpt_path
 
