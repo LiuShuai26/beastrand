@@ -1,14 +1,15 @@
 import torch
 import pytest
 
+from beastrand.core.base_policy import BasePolicy
 from beastrand.ppo.policy import PPOPolicy
 from projects.ppo_lstm.policy import PPOLSTMPolicy
 from projects.ppo_lstm.data_record import PPOLSTMDataRecord
 
 
 class DummyCfg:
-    def __init__(self, use_lstm: bool = False):
-        self.obs_shape = (4,)
+    def __init__(self, use_lstm: bool = False, obs_shape=(4,), normalize_input: bool = False):
+        self.obs_shape = obs_shape
         self.act_shape = (2,)
         self.act_kind = "box"
         self.act_n = None
@@ -16,6 +17,7 @@ class DummyCfg:
         args.mlp_layers = [8, 8]
         args.use_lstm = use_lstm
         args.lstm_hidden_size = 4
+        args.normalize_input = normalize_input
         self.args = args
 
 
@@ -75,3 +77,86 @@ def test_ppo_lstm_data_record_batch():
     assert batch["rnn_state_h"].shape == (T, ctx.args.lstm_hidden_size)
     assert batch["rnn_state_c"].shape == (T, ctx.args.lstm_hidden_size)
     assert batch["mask"].shape == (T,)
+
+
+class _NormPolicy(BasePolicy):
+    """Minimal BasePolicy subclass for exercising normalize_obs in isolation."""
+
+    def act(self, inputs, deterministic=False):
+        return {"action": self.normalize_obs(inputs["obs"])}
+
+
+def test_normalize_obs_flat_updates_running_stats():
+    cfg = DummyCfg(obs_shape=(4,), normalize_input=True)
+    policy = _NormPolicy(cfg)
+    policy.train()
+
+    obs = torch.randn(32, 4) * 3.0 + 5.0
+    out = policy.normalize_obs(obs)
+    assert out.shape == obs.shape
+
+    mean = policy.obs_normalizer.running_mean
+    assert mean.shape == (4,)
+    assert torch.allclose(mean, obs.mean(dim=0), atol=1e-4)
+
+
+def test_normalize_obs_multidim_preserves_shape():
+    cfg = DummyCfg(obs_shape=(3, 4, 4), normalize_input=True)
+    policy = _NormPolicy(cfg)
+    policy.train()
+
+    obs = torch.randn(8, 3, 4, 4)
+    out = policy.normalize_obs(obs)
+    assert out.shape == obs.shape
+
+    mean = policy.obs_normalizer.running_mean
+    assert mean.shape == (3 * 4 * 4,)
+    assert torch.allclose(mean, obs.reshape(8, -1).mean(dim=0), atol=1e-4)
+
+
+class _ImagePolicy(BasePolicy):
+    """Tiny image-observation policy used to exercise normalize_obs end-to-end
+    on a (B, C, H, W) forward path. Mirrors what an Atari-style policy does:
+    keep spatial shape through normalization, then feed Conv2d."""
+
+    def __init__(self, cfg):
+        super().__init__(cfg)
+        c, _, _ = cfg.obs_shape
+        self.conv = torch.nn.Conv2d(c, 4, kernel_size=3, padding=1)
+        self.head = torch.nn.Linear(4 * cfg.obs_shape[1] * cfg.obs_shape[2], cfg.act_shape[0])
+
+    def act(self, inputs, deterministic=False):
+        x = self.normalize_obs(inputs["obs"])
+        x = self.conv(x).flatten(1)
+        return {"action": self.head(x)}
+
+
+def test_normalize_input_end_to_end_multidim():
+    cfg = DummyCfg(obs_shape=(3, 4, 4), normalize_input=True)
+    policy = _ImagePolicy(cfg)
+    policy.train()
+
+    obs = torch.randn(8, 3, 4, 4) * 2.0 + 1.0
+    out = policy.act({"obs": obs})
+    assert out["action"].shape == (8, 2)
+
+    assert policy.obs_normalizer.running_mean.shape == (3 * 4 * 4,)
+    assert policy.obs_normalizer.count.item() >= 8
+
+
+def test_normalize_obs_disabled_passthrough():
+    cfg = DummyCfg(obs_shape=(4,), normalize_input=False)
+    policy = _NormPolicy(cfg)
+    assert policy.obs_normalizer is None
+    obs = torch.randn(2, 4)
+    assert torch.equal(policy.normalize_obs(obs), obs)
+
+
+def test_ppo_policy_with_normalize_input():
+    cfg = DummyCfg(obs_shape=(4,), normalize_input=True)
+    policy = PPOPolicy(cfg)
+    obs = torch.randn(4, 4)
+    out = policy.act({"obs": obs})
+    assert out["action"].shape == (4, 2)
+    assert policy.obs_normalizer is not None
+    assert policy.obs_normalizer.running_mean.shape == (4,)

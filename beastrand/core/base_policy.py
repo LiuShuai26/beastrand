@@ -24,10 +24,19 @@ class BasePolicy(ABC, nn.Module):
             self.obs_normalizer = RunningMeanStdTorch(self.obs_dim)
 
     def normalize_obs(self, obs: torch.Tensor) -> torch.Tensor:
-        """Normalize observations if normalize_input is enabled."""
-        if self.obs_normalizer is not None:
-            return self.obs_normalizer(obs)
-        return obs
+        """Normalize observations if normalize_input is enabled.
+
+        The normalizer is built against the flattened obs_dim. For non-flat
+        observations (images, etc.) flatten the trailing dims, normalize,
+        then restore the original shape.
+        """
+        if self.obs_normalizer is None:
+            return obs
+        if obs.ndim > 2:
+            original_shape = obs.shape
+            obs_flat = obs.reshape(obs.shape[0], -1)
+            return self.obs_normalizer(obs_flat).reshape(original_shape)
+        return self.obs_normalizer(obs)
 
     # ---- required ----
     @abstractmethod

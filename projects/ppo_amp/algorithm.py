@@ -268,8 +268,8 @@ class PPOAMPAlgorithm:
         N = b_obs.shape[0]
 
         clipfracs = []
-        approx_kl = torch.tensor(0.0, device=device)
-        analytical_kl = torch.tensor(0.0, device=device)
+        approx_kl = torch.tensor(0.0, device=self.device)
+        analytical_kl = torch.tensor(0.0, device=self.device)
 
         kl_coeff = getattr(args, "kl_loss_coeff", 0.0)
         has_action_logits = "action_logits" in data
@@ -312,7 +312,7 @@ class PPOAMPAlgorithm:
                 pg_loss = torch.max(pg_loss1, pg_loss2).mean()
 
                 # Per-group value loss
-                v_loss = torch.tensor(0.0, device=device)
+                v_loss = torch.tensor(0.0, device=self.device)
                 for g in range(G):
                     nv = newvalues_g[:, g]
                     v_loss_unclipped = (nv - b_returns_g[mb_inds, g]) ** 2
