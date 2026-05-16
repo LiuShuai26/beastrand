@@ -97,3 +97,53 @@ Both frameworks use identical hyperparameters (SF's MuJoCo defaults from `sf_exa
 | mlp_layers | [64, 64], tanh |
 | adaptive_stddev | False |
 | shuffle_minibatches | False |
+
+---
+
+# PPO-LSTM Reference (Humanoid-v4)
+
+**Date**: 2026-05-16 · **HEAD**: ff7100a (audit follow-up wave 3)
+**Test machine**: same as above (Ryzen 9 5950X · 32 GB · RTX 5070 Ti).
+
+First reference numbers for the recurrent variant. Run via
+`bash scripts/benchmark_humanoid.sh lstm` (3 seeds × 10M steps).
+
+## Results (8w × 8e = 64 envs)
+
+| seed | duration | FPS    | reward (8-worker mean) |
+|------|---------:|-------:|-----------------------:|
+| 42   |    714 s | 14,002 |                  5,387 |
+| 123  |    713 s | 14,022 |                  6,594 |
+| 7    |    690 s | 14,493 |                  6,773 |
+| mean |        — | **14,172** |              **6,251** |
+
+## LSTM vs PPO (same machine, same code, same seeds)
+
+| Metric          | PPO    | PPO-LSTM | Δ        |
+|-----------------|-------:|---------:|---------:|
+| FPS (mean)      | 15,968 |   14,172 | **-11.2%** |
+| Reward (mean)   |  5,775 |    6,251 | **+8.2%**  |
+
+LSTM throughput tax (~11%) comes from BPTT + RNN-state propagation; the
+mean reward is higher but **seed-dependent**: LSTM under-performs PPO on
+seed 42 (5,387 vs 6,162) while substantially out-performing on seeds 123
+and 7. Humanoid-v4 is a fully observable MDP, so the lift is not a
+free-lunch — likely some combination of temporal smoothing and momentum
+effects. Three seeds is too small for a statistical claim; treat the
++8.2% mean as illustrative, not nominal.
+
+## Command
+
+```bash
+python -m projects.ppo_lstm.train \
+  --env-id Humanoid-v4 \
+  --seed 42 \
+  --total-env-steps 10000000 \
+  --run-name bench_lstm_s42
+```
+
+Hyperparameters are the SF-matched mujoco defaults plus LSTM-specific
+fields (`lstm_hidden_size`, `recurrence`, etc.) from
+`projects/ppo_lstm/config.py`. The numerical-safety ratio clamp
+(`compute_clamped_ratio`, [0.05, 20.0]) added in wave 3 is active on this
+run.
