@@ -11,7 +11,12 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 
-from beastrand.ppo.algorithm import compute_gae, normalize_advantages, to_torch
+from beastrand.ppo.algorithm import (
+    compute_clamped_ratio,
+    compute_gae,
+    normalize_advantages,
+    to_torch,
+)
 
 
 class PPOLSTMAlgorithm:
@@ -241,7 +246,7 @@ def ppo_lstm_update(
             newvalue = out["value"].reshape(S, recurrence)
 
             logratio = newlogprob - logprob_old_mb
-            ratio = logratio.exp()
+            ratio = compute_clamped_ratio(logratio)
 
             # Approximate KL for monitoring
             with torch.no_grad():

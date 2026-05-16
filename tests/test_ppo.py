@@ -4,7 +4,15 @@ import numpy as np
 import pytest
 import torch
 
-from beastrand.ppo.algorithm import compute_gae, normalize_advantages, ppo_update, PPOAlgorithm
+from beastrand.ppo.algorithm import (
+    compute_clamped_ratio,
+    compute_gae,
+    normalize_advantages,
+    ppo_update,
+    PPOAlgorithm,
+    RATIO_CLAMP_MIN,
+    RATIO_CLAMP_MAX,
+)
 from beastrand.core.running_mean_std import RunningMeanStd, RunningMeanStdTorch
 from beastrand.utils.tensor_utils import to_torch
 
@@ -794,3 +802,53 @@ class TestLRSchedule:
             expected_lr = initial_lr * (1.0 - i / total_updates)
             actual_lr = algo.opt["opt"].param_groups[0]["lr"]
             assert actual_lr == pytest.approx(expected_lr, abs=1e-8)
+
+
+class TestRatioClamp:
+    """``compute_clamped_ratio`` is shared by core PPO, PPO-LSTM, and PPO-AMP.
+
+    Without the clamp, stale policies or outlier logprobs push ``exp(logratio)``
+    toward ``inf`` and NaN the loss; the clamp keeps gradients finite.
+    """
+
+    def test_passthrough_in_normal_range(self):
+        logratio = torch.tensor([0.0, 0.1, -0.1, 0.5])
+        ratio = compute_clamped_ratio(logratio)
+        # Within range, ratio is exp(logratio) verbatim.
+        assert torch.allclose(ratio, logratio.exp())
+
+    def test_clamps_huge_positive_logratio(self):
+        # exp(50) ≈ 5.2e21 — would dominate the policy loss without clamp.
+        logratio = torch.tensor([50.0])
+        ratio = compute_clamped_ratio(logratio)
+        assert ratio.item() == pytest.approx(RATIO_CLAMP_MAX)
+
+    def test_clamps_huge_negative_logratio(self):
+        # exp(-50) ≈ 2e-22 — equally pathological.
+        logratio = torch.tensor([-50.0])
+        ratio = compute_clamped_ratio(logratio)
+        assert ratio.item() == pytest.approx(RATIO_CLAMP_MIN)
+
+    def test_clamps_inf(self):
+        logratio = torch.tensor([float("inf"), float("-inf")])
+        ratio = compute_clamped_ratio(logratio)
+        assert ratio[0].item() == pytest.approx(RATIO_CLAMP_MAX)
+        assert ratio[1].item() == pytest.approx(RATIO_CLAMP_MIN)
+        assert torch.isfinite(ratio).all()
+
+    def test_preserves_grad(self):
+        logratio = torch.tensor([0.3], requires_grad=True)
+        ratio = compute_clamped_ratio(logratio)
+        ratio.sum().backward()
+        # Inside the clamp window the derivative of exp is exp itself.
+        assert logratio.grad.item() == pytest.approx(torch.exp(torch.tensor(0.3)).item())
+
+    def test_lstm_and_amp_use_same_helper(self):
+        """Sanity check that LSTM and AMP wire up the shared helper rather
+        than re-inlining the clamp (the prior LSTM/AMP code shipped without
+        any clamp at all)."""
+        import projects.ppo_lstm.algorithm as lstm_algo
+        import projects.ppo_amp.algorithm as amp_algo
+
+        assert lstm_algo.compute_clamped_ratio is compute_clamped_ratio
+        assert amp_algo.compute_clamped_ratio is compute_clamped_ratio

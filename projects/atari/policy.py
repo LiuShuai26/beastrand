@@ -39,11 +39,16 @@ class AtariPolicy(BasePolicy):
         self.apply(partial(init_weights, gain=1.0))
 
     def _preprocess(self, obs: torch.Tensor) -> torch.Tensor:
-        """Scale uint8 images to [0, 1], then apply obs normalizer if enabled."""
-        if obs.dtype == torch.uint8:
-            obs = obs.float() / 255.0
-        elif obs.dtype != torch.float32:
+        """Scale 0-255 pixel values to [0, 1], then apply obs normalizer if enabled.
+
+        Atari observations are always 0-255 pixels regardless of upstream
+        dtype. The rollout worker casts obs to float32 before storage, so a
+        dtype-only check (the prior implementation) would miss the rescale
+        and leave the CNN consuming raw 0-255 inputs.
+        """
+        if obs.dtype != torch.float32:
             obs = obs.float()
+        obs = obs / 255.0
         # Ensure channels-first: (B, C, H, W)
         # FrameStack produces (B, C, H, W) where C=4 (stacked frames)
         # and H=W=84, so shape[1]=4 < shape[2]=84 — already channels-first.

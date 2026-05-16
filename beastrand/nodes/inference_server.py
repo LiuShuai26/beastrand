@@ -148,9 +148,8 @@ class InferenceServer:
         if self.agent_role == 0:
             self.param_client.ensure_updated(self.policy)
         else:
-            snap = self._snapshot_pool.sample_random()
-            if snap:
-                self._snapshot_pool.load_into(snap, self.policy)
+            # Retry-aware: prune can delete the sampled snapshot before load.
+            self._snapshot_pool.sample_and_load(self.policy)
 
         # Signal Manager that ZMQ sockets are bound and we're ready
         ev = self.ctx.ready_events.get(f"inference_server_{self.server_idx}")
@@ -167,9 +166,8 @@ class InferenceServer:
                 else:
                     self._opp_batch_counter += 1
                     if self._opp_batch_counter >= self._opp_refresh_interval:
-                        snap = self._snapshot_pool.sample_random()
-                        if snap:
-                            self._snapshot_pool.load_into(snap, self.policy)
+                        # Retry-aware: prune can delete the sampled snapshot before load.
+                        self._snapshot_pool.sample_and_load(self.policy)
                         self._opp_batch_counter = 0
                 t1 = time.monotonic()
                 self.prof.add("weight_sync", t1 - t0)

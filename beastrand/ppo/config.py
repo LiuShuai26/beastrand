@@ -89,8 +89,16 @@ class Args:
             raise ValueError("replay_capacity must be at least as large as batch_size")
         if self.replay_capacity % self.batch_size != 0:
             raise ValueError("replay_capacity must be a multiple of batch_size")
-        if self.learning_starts < self.replay_capacity:
-            raise ValueError("learning_starts must be at least as large as replay_capacity")
+        if self.learning_starts != self.replay_capacity:
+            # BatchBuffer.valid_steps caps at replay_capacity, so the learner's
+            # `valid_steps >= learning_starts` trigger only fires correctly when
+            # the two are equal: a larger learning_starts hangs forever, a smaller
+            # one triggers get_batch before the buffer is full and raises.
+            raise ValueError(
+                "learning_starts must equal replay_capacity "
+                f"(got learning_starts={self.learning_starts}, "
+                f"replay_capacity={self.replay_capacity})"
+            )
         if self.learning_starts % self.batch_size != 0:
             raise ValueError("learning_starts must be a multiple of batch_size")
         self.validate()

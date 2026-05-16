@@ -22,7 +22,7 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 
-from beastrand.ppo.algorithm import normalize_advantages
+from beastrand.ppo.algorithm import compute_clamped_ratio, normalize_advantages
 from projects.ppo_amp.discriminator import AMPDiscriminator
 from projects.ppo_amp.motion_buffer import AMPMotionBuffer
 from projects.ppo_amp.rewards import compute_disc_loss, compute_style_reward
@@ -134,11 +134,12 @@ class PPOAMPAlgorithm:
         arrays = view
         obs_np = arrays["obs"]  # (T+1, obs_dim)
         amp_obs_full = self._extract_amp_obs(obs_np)  # (T+1, amp_obs_dim)
-        assert amp_obs_full.shape[-1] == self.amp_obs_dim, (
-            f"AMP feature dim mismatch: extracted {amp_obs_full.shape[-1]} "
-            f"from obs_dim={obs_np.shape[-1]}, slices={self.amp_obs_slices}, "
-            f"expected {self.amp_obs_dim}"
-        )
+        if amp_obs_full.shape[-1] != self.amp_obs_dim:
+            raise ValueError(
+                f"AMP feature dim mismatch: extracted {amp_obs_full.shape[-1]} "
+                f"from obs_dim={obs_np.shape[-1]}, slices={self.amp_obs_slices}, "
+                f"expected {self.amp_obs_dim}"
+            )
         transitions = np.concatenate(
             [amp_obs_full[:-1], amp_obs_full[1:]], axis=-1,
         )  # (T, 2*amp_obs_dim)
@@ -291,7 +292,7 @@ class PPOAMPAlgorithm:
                 newvalues_g = eval_out["value"]  # (mb, 2)
 
                 logratio = newlogprob - b_logprobs[mb_inds]
-                ratio = logratio.exp()
+                ratio = compute_clamped_ratio(logratio)
 
                 with torch.no_grad():
                     approx_kl = ((ratio - 1) - logratio).mean()
@@ -467,24 +468,35 @@ class PPOAMPAlgorithm:
         logging.info("saved checkpoint to %s", ckpt_path)
 
         # 2. ONNX export (actor only: body → mean action, always overwrite latest)
+        # Probe for onnx package first: torch.onnx.export's default (dynamo) path
+        # writes a full traceback to stderr before raising when onnx is missing,
+        # polluting training logs. Skip the export entirely when unavailable.
         try:
-            actor = ActorForExport(policy.body, policy.dist_head.mean)
-            actor.eval()
-            obs_dim = policy.obs_dim
-            dummy = torch.zeros(1, obs_dim, device=self.device)
-            onnx_path = os.path.join(save_dir, "actor.onnx")
-            torch.onnx.export(
-                actor,
-                dummy,
-                onnx_path,
-                input_names=["obs"],
-                output_names=["action_mean"],
-                dynamic_axes={"obs": {0: "batch"}, "action_mean": {0: "batch"}},
-            )
-            ensure_single_onnx_file(onnx_path)
-            logging.info("saved ONNX actor to %s", onnx_path)
-        except Exception:
-            logging.exception("ONNX export failed")
+            import onnx  # noqa: F401
+            _onnx_available = True
+        except ImportError:
+            _onnx_available = False
+            logging.info("onnx package not installed; skipping ONNX actor export")
+
+        if _onnx_available:
+            try:
+                actor = ActorForExport(policy.body, policy.dist_head.mean)
+                actor.eval()
+                obs_dim = policy.obs_dim
+                dummy = torch.zeros(1, obs_dim, device=self.device)
+                onnx_path = os.path.join(save_dir, "actor.onnx")
+                torch.onnx.export(
+                    actor,
+                    dummy,
+                    onnx_path,
+                    input_names=["obs"],
+                    output_names=["action_mean"],
+                    dynamic_axes={"obs": {0: "batch"}, "action_mean": {0: "batch"}},
+                )
+                ensure_single_onnx_file(onnx_path)
+                logging.info("saved ONNX actor to %s", onnx_path)
+            except Exception:
+                logging.exception("ONNX export failed")
 
         return ckpt_path
 

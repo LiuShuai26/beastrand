@@ -28,6 +28,35 @@ from typing import Dict, List, Optional
 import numpy as np
 import torch
 
+
+def write_boundary_obs(
+    traj_tensors: Dict[str, torch.Tensor],
+    traj_idx: int,
+    T: int,
+    obs,
+    done: bool,
+) -> None:
+    """Write the trajectory's boundary observation at index T.
+
+    Consumers like AMP build transition pairs via ``obs[:-1] / obs[1:]`` and
+    therefore read ``obs[T]``. The rollout's per-step writes only populate
+    ``obs[0:T]``; without this call the boundary stays as stale data from a
+    prior slot owner.
+
+    Pattern mirrors ``value[T]``: write the real next obs when the episode
+    continued across the rollout boundary; zero out when the episode ended
+    (env auto-reset has already pointed ``es.obs`` at a NEW episode, which
+    would be misleading as a transition continuation).
+    """
+    if "obs" not in traj_tensors:
+        return
+    if not done:
+        traj_tensors["obs"][traj_idx, T] = torch.from_numpy(
+            np.asarray(obs, dtype=np.float32)
+        )
+    else:
+        traj_tensors["obs"][traj_idx, T] = 0.0
+
 from beastrand.core.envs.make_env import make_env
 from beastrand.nodes.common import child_logging_setup, child_sig_setup, ProfileAccum
 from beastrand.nodes.logger import child_attach_logger, log_scalar
@@ -72,8 +101,20 @@ class RolloutWorker:
         # Detect LSTM from schema (rnn_state_h present in traj_tensors)
         self.use_lstm = "rnn_state_h" in ctx.buffer_mgr.traj_tensors
         self.bootstrap_value = bool(args.bootstrap_value)
-        if self.use_lstm and self.self_play_mode == "latest" and getattr(args, "num_agents", 1) > 1:
-            raise NotImplementedError("latest self-play batching does not support LSTM policies yet")
+        # Reject any self-play config that dispatches latest opponents under LSTM:
+        # the latest path reuses the training IS's flat per-(worker,env) live RNN
+        # state buffer, which is not allocated per opponent agent. mode == "mixed"
+        # with latest_self_play_ratio > 0 is the same hazard as mode == "latest".
+        if self.use_lstm and getattr(args, "num_agents", 1) > 1:
+            _latest_ratio = float(getattr(args, "latest_self_play_ratio", 0.0))
+            if self.self_play_mode == "latest" or (
+                self.self_play_mode == "mixed" and _latest_ratio > 0.0
+            ):
+                raise NotImplementedError(
+                    "latest self-play batching does not support LSTM policies yet "
+                    f"(self_play_mode={self.self_play_mode!r}, "
+                    f"latest_self_play_ratio={_latest_ratio})"
+                )
 
         # Shared tensors from BufferMgr
         self.traj_tensors = ctx.buffer_mgr.traj_tensors
@@ -418,6 +459,12 @@ class RolloutWorker:
         ei = es.env_idx
         flat_idx = wi * self.num_envs + ei
         split_idx = int(self._env_split[ei])
+
+        # Write obs[T] for consumers that read the trajectory boundary state
+        # (e.g. AMP). See write_boundary_obs() docstring for rationale.
+        write_boundary_obs(
+            self.traj_tensors, es.traj_idx, self.T, es.obs, bool(es.done)
+        )
 
         # Optional bootstrap: request VALUE for obs[T] (next obs after last step)
         if self.bootstrap_value and not es.done:

@@ -75,11 +75,41 @@ class SnapshotPool:
             return None
         return random.choice(snaps)
 
-    def load_into(self, path: str, policy: nn.Module) -> None:
-        """Load snapshot weights into a policy model."""
-        state = torch.load(path, map_location="cpu", weights_only=True)
+    def load_into(self, path: str, policy: nn.Module) -> bool:
+        """Load snapshot weights into a policy model.
+
+        Returns True on success, False if the snapshot file was pruned
+        between sampling and loading (race against ``_prune``). Callers
+        should retry with a fresh sample on False.
+        """
+        try:
+            state = torch.load(path, map_location="cpu", weights_only=True)
+        except FileNotFoundError:
+            log.debug(
+                "Snapshot %s pruned before load — caller should resample",
+                os.path.basename(path),
+            )
+            return False
         policy.load_state_dict(state)
         log.info("Snapshot loaded: %s", os.path.basename(path))
+        return True
+
+    def sample_and_load(
+        self, policy: nn.Module, max_retries: int = 3
+    ) -> bool:
+        """Sample a random snapshot and load it, retrying on prune races.
+
+        Returns True on success, False if no snapshot could be loaded after
+        ``max_retries`` attempts (typically: pool is empty or every sample
+        races with prune — both rare).
+        """
+        for _ in range(max_retries):
+            path = self.sample_random()
+            if path is None:
+                return False
+            if self.load_into(path, policy):
+                return True
+        return False
 
     def _prune(self) -> None:
         """Remove oldest snapshots exceeding max_snapshots."""

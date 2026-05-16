@@ -95,6 +95,16 @@ Each project provides SF-matched hyperparameters, custom policy/env factories as
 
 The environment factory is pluggable via `make_env_path` in the config (dotted Python path). Projects can provide custom factories for non-Gymnasium environments. `probe_env()` in Manager also respects this path so that env specs are correctly probed for custom backends.
 
+#### Multi-agent env contract
+
+For multi-agent rollouts (`args.num_agents > 1`), the env passes non-training agents' observations and actions through attributes on the env object, not through the standard step/reset return values. The training agent (index 0) uses normal Gym semantics; other agents use side-channel attrs:
+
+- `env.agent_obs: List[np.ndarray]` — populated by env on `reset()` / `step()`; index `a` is agent `a`'s observation.
+- `env.agent_actions: List[np.ndarray]` — populated by the rollout worker before each `step()`; the env reads index `a` for agent `a`'s action.
+- `env.num_agents: int` — total agent count, set in `__init__`.
+
+`env.step(action)` takes only agent 0's action; the env reads `agent_actions[1:]` internally to drive the other agents and writes all agents' obs back into `agent_obs`. See `projects/tennis/pettingzoo_wrapper.py` for a reference implementation that wraps a PettingZoo parallel env into this contract.
+
 ### Module system (pluggable via dotted paths)
 
 Config dataclasses (`Args`) specify `data_record_path`, `policy_path`, `algorithm_path`, and optionally `make_env_path` as dotted Python paths. These are resolved at runtime via `get_object_from_path()`.

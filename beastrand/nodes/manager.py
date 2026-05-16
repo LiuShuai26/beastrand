@@ -201,6 +201,20 @@ class Manager:
         algorithm_cls = get_object_from_path(self.args.algorithm_path)
         validate_contracts(self.ctx, record_cls, policy_cls, algorithm_cls)
 
+        # 2b. Cross-config invariant: the BatchBuffer caps valid_steps at
+        # replay_capacity, so the learner's `valid_steps >= learning_starts`
+        # trigger only fires correctly when they are equal. Catches projects
+        # whose Args subclass overrides __post_init__ and skips the base
+        # PPOArgs equality check.
+        _ls = int(getattr(self.args, "learning_starts", 0))
+        _rc = int(getattr(self.args, "replay_capacity", 0))
+        if _ls and _rc and _ls != _rc:
+            raise ValueError(
+                f"learning_starts must equal replay_capacity (got "
+                f"learning_starts={_ls}, replay_capacity={_rc}); "
+                "larger hangs forever, smaller raises in get_batch."
+            )
+
         # 3. Compute topology
         num_workers = self.args.num_workers
         num_envs_per_worker = self.args.num_envs_per_worker

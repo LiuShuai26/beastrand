@@ -160,3 +160,33 @@ def test_ppo_policy_with_normalize_input():
     assert out["action"].shape == (4, 2)
     assert policy.obs_normalizer is not None
     assert policy.obs_normalizer.running_mean.shape == (4,)
+
+
+def test_atari_preprocess_rescales_float32_pixels():
+    """The rollout worker stores Atari obs as float32 [0, 255]. The policy
+    must rescale to [0, 1] regardless of dtype — the prior dtype-gated branch
+    silently fed raw 0-255 pixels into the CNN."""
+    from projects.atari.policy import AtariPolicy
+
+    class _AtariCfg:
+        def __init__(self):
+            self.obs_shape = (4, 84, 84)
+            self.act_shape = ()
+            self.act_kind = "discrete"
+            self.act_n = 6
+            args = type("Args", (), {})()
+            args.normalize_input = False
+            self.args = args
+
+    policy = AtariPolicy(_AtariCfg())
+    # Worker-style storage: float32 in [0, 255].
+    obs = torch.full((1, 4, 84, 84), 255.0, dtype=torch.float32)
+    out = policy._preprocess(obs)
+    assert out.max().item() <= 1.0
+    assert out.min().item() >= 0.0
+    assert torch.allclose(out, torch.ones_like(out))
+
+    # uint8 path still works (it's just a different upstream encoding).
+    obs_u8 = torch.full((1, 4, 84, 84), 128, dtype=torch.uint8)
+    out_u8 = policy._preprocess(obs_u8)
+    assert torch.allclose(out_u8, torch.full_like(out_u8, 128.0 / 255.0))

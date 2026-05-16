@@ -98,48 +98,59 @@ class PPOAlgorithm:
         logging.info("saved checkpoint to %s", ckpt_path)
 
         # 2. ONNX export (actor only: body → deterministic action, always overwrite latest)
+        # Probe for onnx package first: torch.onnx.export's default (dynamo) path
+        # writes a full traceback to stderr before raising when onnx is missing,
+        # polluting training logs. Skip the export entirely when unavailable.
         try:
-            trunk = getattr(policy, "body", None)
-            preprocess = None
-            if trunk is None:
-                trunk = getattr(policy, "encoder", None)
-                preprocess_fn = getattr(policy, "_preprocess", None)
-                if trunk is not None and preprocess_fn is not None:
-                    preprocess = preprocess_fn
-            if trunk is None:
-                raise AttributeError("Policy has no exportable trunk (expected 'body' or 'encoder')")
+            import onnx  # noqa: F401
+            _onnx_available = True
+        except ImportError:
+            _onnx_available = False
+            logging.info("onnx package not installed; skipping ONNX actor export")
 
-            discrete = False
-            if hasattr(policy.dist_head, "mean"):
-                action_head = policy.dist_head.mean
-            elif hasattr(policy.dist_head, "logits"):
-                action_head = policy.dist_head.logits
-                discrete = True
-            else:
-                raise AttributeError("Unknown dist_head type for ONNX export")
+        if _onnx_available:
+            try:
+                trunk = getattr(policy, "body", None)
+                preprocess = None
+                if trunk is None:
+                    trunk = getattr(policy, "encoder", None)
+                    preprocess_fn = getattr(policy, "_preprocess", None)
+                    if trunk is not None and preprocess_fn is not None:
+                        preprocess = preprocess_fn
+                if trunk is None:
+                    raise AttributeError("Policy has no exportable trunk (expected 'body' or 'encoder')")
 
-            actor = ActorForExport(
-                trunk,
-                action_head,
-                preprocess=preprocess,
-                discrete=discrete,
-            )
-            actor.eval()
-            obs_shape = tuple(int(x) for x in getattr(policy.cfg, "obs_shape", (policy.obs_dim,)))
-            dummy = torch.zeros((1, *obs_shape), device=self.device)
-            onnx_path = os.path.join(save_dir, "actor.onnx")
-            torch.onnx.export(
-                actor,
-                dummy,
-                onnx_path,
-                input_names=["obs"],
-                output_names=["action"],
-                dynamic_axes={"obs": {0: "batch"}, "action": {0: "batch"}},
-            )
-            ensure_single_onnx_file(onnx_path)
-            logging.info("saved ONNX actor to %s", onnx_path)
-        except Exception:
-            logging.exception("ONNX export failed")
+                discrete = False
+                if hasattr(policy.dist_head, "mean"):
+                    action_head = policy.dist_head.mean
+                elif hasattr(policy.dist_head, "logits"):
+                    action_head = policy.dist_head.logits
+                    discrete = True
+                else:
+                    raise AttributeError("Unknown dist_head type for ONNX export")
+
+                actor = ActorForExport(
+                    trunk,
+                    action_head,
+                    preprocess=preprocess,
+                    discrete=discrete,
+                )
+                actor.eval()
+                obs_shape = tuple(int(x) for x in getattr(policy.cfg, "obs_shape", (policy.obs_dim,)))
+                dummy = torch.zeros((1, *obs_shape), device=self.device)
+                onnx_path = os.path.join(save_dir, "actor.onnx")
+                torch.onnx.export(
+                    actor,
+                    dummy,
+                    onnx_path,
+                    input_names=["obs"],
+                    output_names=["action"],
+                    dynamic_axes={"obs": {0: "batch"}, "action": {0: "batch"}},
+                )
+                ensure_single_onnx_file(onnx_path)
+                logging.info("saved ONNX actor to %s", onnx_path)
+            except Exception:
+                logging.exception("ONNX export failed")
 
         return ckpt_path
 
@@ -180,6 +191,23 @@ class PPOAlgorithm:
 
 def normalize_advantages(adv: torch.Tensor) -> torch.Tensor:
     return (adv - adv.mean()) / (adv.std(unbiased=False) + 1e-8)
+
+
+# SF-style PPO importance-ratio clamp bounds. Stale policies or outlier
+# logprobs can push exp(logratio) toward inf and NaN the loss; clamping
+# keeps the gradient finite. Shared across core/LSTM/AMP PPO updates so
+# they remain numerically aligned.
+RATIO_CLAMP_MIN = 0.05
+RATIO_CLAMP_MAX = 20.0
+
+
+def compute_clamped_ratio(
+    logratio: torch.Tensor,
+    low: float = RATIO_CLAMP_MIN,
+    high: float = RATIO_CLAMP_MAX,
+) -> torch.Tensor:
+    """Return ``exp(logratio)`` clamped to ``[low, high]`` for numerical safety."""
+    return torch.clamp(logratio.exp(), low, high)
 
 
 def compute_gae(ctx, view, returns_rms=None) -> None:
@@ -300,7 +328,7 @@ def ppo_update(
             eval_out = policy.evaluate_actions(inputs)
             newlogprob, entropy, newvalue = eval_out["logp"], eval_out["entropy"], eval_out["value"]
             logratio = newlogprob - b_logprobs[mb_inds]
-            ratio = torch.clamp(logratio.exp(), 0.05, 20.0)  # SF-style numerical safety clamp
+            ratio = compute_clamped_ratio(logratio)
 
             # Approximate KL for monitoring (always computed, cheap)
             with torch.no_grad():
