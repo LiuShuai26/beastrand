@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import ale_py  # noqa: F401  — registers ALE envs in Gymnasium
 import gymnasium as gym
 import numpy as np
 
@@ -38,6 +39,6 @@ def make_env(env_id: str, seed: int = 0, args=None):
     env = ClipRewardEnv(env)
 
     frame_stack = getattr(args, "frame_stack", 4) if args else 4
-    env = gym.wrappers.FrameStack(env, frame_stack)
+    env = gym.wrappers.FrameStackObservation(env, frame_stack)
 
     return env
