@@ -34,7 +34,11 @@ class Args(PPOArgs):
     value_coef: float = field(default=0.5, metadata={"help": "Value loss coefficient"})
     entropy_coef: float = field(default=0.01, metadata={"help": "Entropy coefficient"})
     kl_loss_coeff: float = field(default=0.0, metadata={"help": "KL penalty coefficient"})
-    normalize_input: bool = field(default=True, metadata={"help": "Normalize observations (SF-style: /255 then running mean/std)"})
+    # Atari obs are pixel images; /255 in AtariPolicy._preprocess is the canonical
+    # normalization. Per-pixel running mean/std (RunningMeanStdTorch over 4*84*84)
+    # collapses spatial structure for the CNN and breaks training. Default off,
+    # matches CleanRL / Sample Factory practice.
+    normalize_input: bool = field(default=False, metadata={"help": "Per-pixel running mean/std on images (off — use /255 only)"})
     normalize_returns: bool = field(default=True, metadata={"help": "Normalize value targets (SF-style)"})
 
     # Atari-specific

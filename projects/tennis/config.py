@@ -69,7 +69,9 @@ class Args:
     value_coef: float = field(default=0.5, metadata={"help": "Value loss coefficient"})
     normalize_adv: bool = field(default=True, metadata={"help": "Normalize advantages"})
     normalize_returns: bool = field(default=True, metadata={"help": "Normalize value targets"})
-    normalize_input: bool = field(default=True, metadata={"help": "Normalize observations"})
+    # Tennis uses AtariPolicy on pixel images. See projects/atari/config.py for
+    # why per-pixel running mean/std is wrong here; rely on /255 alone.
+    normalize_input: bool = field(default=False, metadata={"help": "Per-pixel running mean/std on images (off — use /255 only)"})
     kl_loss_coeff: float = field(default=0.0, metadata={"help": "KL penalty coefficient (0=disabled)"})
     sync_training: bool = field(default=False, metadata={"help": "Sync mode"})
 
