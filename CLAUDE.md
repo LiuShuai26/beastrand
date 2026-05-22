@@ -107,6 +107,10 @@ For multi-agent rollouts (`args.num_agents > 1`), the env passes non-training ag
 
 For symmetric two-player games where the underlying env hands both agents an identical pixel buffer (PettingZoo Atari `pong_v3`, `tennis_v3`), a single shared self-play policy cannot disambiguate which side it controls from identical input and collapses to symmetric play. Construct the wrapper with `mirror_h_for_opponents=True` to horizontally flip agent 1+ obs along the last axis — the policy then sees one consistent "my paddle on the left" perspective for both roles. Action axes (UP/DOWN for paddle control) are vertical and unchanged by the H-flip, so no action remapping is needed. `projects/pong/make_env.py` enables this; tennis currently does not.
 
+#### Per-episode bot opponent (`DualEnvWrapper`)
+
+For Pong, a third opponent type is available via `projects/pong/dual_env.py`: `DualEnvWrapper` holds both a `pong_v3` self-play env and a single-agent `PongNoFrameskip-v4` env, and routes per episode based on `set_opponent_mode("snapshot" | "latest" | "bot")`. In `"bot"` mode the active env is single-agent atari (ALE's scripted left paddle plays automatically), `agent_obs[1]` is `None`, and the worker short-circuits agent-1 inference / action writes. The atari obs is H-flipped before being exposed as `agent_obs[0]` so the policy keeps the "my paddle on the left" perspective it learned in mirrored pong_v3 (the atari player controls the RIGHT paddle, so the flip aligns the view with pong_v3 `first_0`). Action spaces match (`Discrete(6)`); reward is ±1 per scored point in both. `bot_ratio` in `projects/pong/config.py` controls the per-episode probability of routing through the bot env.
+
 ### Module system (pluggable via dotted paths)
 
 Config dataclasses (`Args`) specify `data_record_path`, `policy_path`, `algorithm_path`, and optionally `make_env_path` as dotted Python paths. These are resolved at runtime via `get_object_from_path()`.

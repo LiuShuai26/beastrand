@@ -18,6 +18,15 @@ tennis = [
     "supersuit>=3.9",
     "autorom[accept-rom-license]>=0.6",
 ]
+# Pong needs the same atari stack as tennis (pettingzoo[atari] pulls in ale-py
+# transitively for both the pong_v3 self-play env and the single-agent
+# PongNoFrameskip-v4 bot env used by DualEnvWrapper).
+pong = [
+    "pettingzoo[atari]>=1.24",
+    "supersuit>=3.9",
+    "ale-py>=0.10",
+    "autorom[accept-rom-license]>=0.6",
+]
 dev = [
     "pytest>=7.0",
 ]

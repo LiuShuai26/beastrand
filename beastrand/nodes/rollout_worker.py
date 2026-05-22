@@ -96,6 +96,7 @@ class RolloutWorker:
         self.split_depth = ctx.buffer_mgr.split_depth
         self.self_play_mode = getattr(args, "self_play_mode", "snapshot")
         self.latest_self_play_ratio = float(getattr(args, "latest_self_play_ratio", 0.0))
+        self.bot_ratio = float(getattr(args, "bot_ratio", 0.0))
         self._self_play_rng = np.random.RandomState(args.seed + worker_idx * 9973 + 17)
 
         # Detect LSTM from schema (rnn_state_h present in traj_tensors)
@@ -192,6 +193,9 @@ class RolloutWorker:
         for ei in range(self.num_envs):
             seed = args.seed + wi * self.num_envs + ei
             env = _make_env(args.env_id, seed=seed, args=args)
+            opp_mode = self._sample_opponent_mode()
+            if hasattr(env, "set_opponent_mode"):
+                env.set_opponent_mode(opp_mode)
             obs, _ = env.reset(seed=seed)
 
             # Decorrelate experience: each env runs a random number of warmup
@@ -200,22 +204,30 @@ class RolloutWorker:
             for _ in range(warmup):
                 obs, _, terminated, truncated, _ = env.step(env.action_space.sample())
                 if terminated or truncated:
+                    opp_mode = self._sample_opponent_mode()
+                    if hasattr(env, "set_opponent_mode"):
+                        env.set_opponent_mode(opp_mode)
                     obs, _ = env.reset()
 
             flat_idx = wi * self.num_envs + ei
             traj_idx = flat_idx * self.split_depth + 0  # start with split 0
             extra_obs = []
-            if self.num_agents > 1 and hasattr(env, "agent_obs"):
+            if self.num_agents > 1 and hasattr(env, "agent_obs") and opp_mode != "bot":
                 extra_obs = [env.agent_obs[a] for a in range(1, self.num_agents)]
             self.envs.append(EnvState(
                 env=env, obs=obs, traj_idx=traj_idx, env_idx=ei,
                 extra_obs=extra_obs,
-                opponent_mode=self._sample_opponent_mode(),
+                opponent_mode=opp_mode,
             ))
 
     def _sample_opponent_mode(self) -> str:
         if self.num_agents <= 1:
             return "snapshot"
+        # Bot tier first: env-internal scripted opponent (single-agent atari).
+        # Requires the env to support set_opponent_mode("bot"); the worker
+        # short-circuits agent-1 inference / action writes for bot episodes.
+        if self.bot_ratio > 0.0 and self._self_play_rng.rand() < self.bot_ratio:
+            return "bot"
         if self.self_play_mode == "latest":
             return "latest"
         if self.self_play_mode == "snapshot":
@@ -253,17 +265,18 @@ class RolloutWorker:
                     continue
                 flat_idx = self.worker_idx * self.num_envs + es.env_idx
 
-                # Wait for ALL agents' inference to complete
+                # Wait for ALL agents' inference to complete (skip extra flags
+                # in bot mode — env handles the opponent internally).
                 if not self.ready_flags[flat_idx]:
                     continue
-                if self.num_agents > 1:
+                if self.num_agents > 1 and es.opponent_mode != "bot":
                     extra_ready_flags = self._latest_ready_flags if es.opponent_mode == "latest" else self._snapshot_ready_flags
                     if not all(f[flat_idx] for f in extra_ready_flags):
                         continue
 
                 # Clear all ready flags
                 self.ready_flags[flat_idx] = 0
-                if self.num_agents > 1:
+                if self.num_agents > 1 and es.opponent_mode != "bot":
                     extra_ready_flags = self._latest_ready_flags if es.opponent_mode == "latest" else self._snapshot_ready_flags
                     for f in extra_ready_flags:
                         f[flat_idx] = 0
@@ -333,7 +346,7 @@ class RolloutWorker:
 
     def _send_extra_requests(self, es: EnvState, op: int) -> None:
         """Send inference requests for agents 1+ (no trajectory storage)."""
-        if self.num_agents <= 1:
+        if self.num_agents <= 1 or es.opponent_mode == "bot":
             return
         flat_idx = self.worker_idx * self.num_envs + es.env_idx
         for a_offset, extra_obs in enumerate(es.extra_obs):
@@ -373,8 +386,9 @@ class RolloutWorker:
         if "model_version" in self.traj_tensors:
             self.traj_tensors["model_version"][ti, s] = int(self.ctx.buffer_mgr.policy_version.item())
 
-        # Multi-agent: set other agents' actions on env via side-channel
-        if self.num_agents > 1 and hasattr(es.env, "agent_actions"):
+        # Multi-agent: set other agents' actions on env via side-channel.
+        # In bot mode the underlying env handles the opponent internally.
+        if self.num_agents > 1 and hasattr(es.env, "agent_actions") and es.opponent_mode != "bot":
             extra_acts = self._latest_extra_act if es.opponent_mode == "latest" else self._snapshot_extra_act
             for a_offset in range(len(extra_acts)):
                 act = extra_acts[a_offset][flat_idx]
@@ -412,10 +426,12 @@ class RolloutWorker:
             self._recent_lengths.append(es.episode_length)
             self._maybe_log_summary(step)
 
+            es.opponent_mode = self._sample_opponent_mode()
+            if hasattr(es.env, "set_opponent_mode"):
+                es.env.set_opponent_mode(es.opponent_mode)
             next_obs, _ = es.env.reset()
             es.episode_reward = 0.0
             es.episode_length = 0
-            es.opponent_mode = self._sample_opponent_mode()
 
             # Zero LSTM live state on episode reset.
             if self.use_lstm and self._rnn_live_h is not None:
@@ -423,9 +439,14 @@ class RolloutWorker:
                 self._rnn_live_c[flat_idx] = 0.0
 
         es.obs = next_obs
-        # Update extra agents' obs from side-channel
+        # Update extra agents' obs from side-channel. In bot mode the env
+        # leaves agent_obs[1:] as None; clear extra_obs accordingly so the
+        # short-circuited send/advance paths see an empty list.
         if self.num_agents > 1 and hasattr(es.env, "agent_obs"):
-            es.extra_obs = [es.env.agent_obs[a] for a in range(1, self.num_agents)]
+            if es.opponent_mode == "bot":
+                es.extra_obs = []
+            else:
+                es.extra_obs = [es.env.agent_obs[a] for a in range(1, self.num_agents)]
         es.step += 1
         es.pending = False
 
