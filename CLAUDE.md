@@ -105,6 +105,8 @@ For multi-agent rollouts (`args.num_agents > 1`), the env passes non-training ag
 
 `env.step(action)` takes only agent 0's action; the env reads `agent_actions[1:]` internally to drive the other agents and writes all agents' obs back into `agent_obs`. See `projects/tennis/pettingzoo_wrapper.py` for a reference implementation that wraps a PettingZoo parallel env into this contract.
 
+For symmetric two-player games where the underlying env hands both agents an identical pixel buffer (PettingZoo Atari `pong_v3`, `tennis_v3`), a single shared self-play policy cannot disambiguate which side it controls from identical input and collapses to symmetric play. Construct the wrapper with `mirror_h_for_opponents=True` to horizontally flip agent 1+ obs along the last axis — the policy then sees one consistent "my paddle on the left" perspective for both roles. Action axes (UP/DOWN for paddle control) are vertical and unchanged by the H-flip, so no action remapping is needed. `projects/pong/make_env.py` enables this; tennis currently does not.
+
 ### Module system (pluggable via dotted paths)
 
 Config dataclasses (`Args`) specify `data_record_path`, `policy_path`, `algorithm_path`, and optionally `make_env_path` as dotted Python paths. These are resolved at runtime via `get_object_from_path()`.

@@ -25,11 +25,24 @@ class PettingZooParallelWrapper(gym.Env):
         env.agent_actions[a]   — action for agent a (set by worker before step)
     """
 
-    def __init__(self, par_env):
+    def __init__(self, par_env, mirror_h_for_opponents: bool = False):
+        """
+        Args:
+            par_env: PettingZoo ParallelEnv instance.
+            mirror_h_for_opponents: When True, observations for agents 1+ are
+                horizontally flipped along the final axis before being exposed
+                via ``agent_obs``. Use this for symmetric two-player games
+                (e.g. PettingZoo Atari pong_v3) where both agents receive the
+                same global frame: flipping the opponent's view lets a single
+                shared policy learn ONE perspective ("my paddle on the left")
+                and be deployed on both sides without needing to disambiguate
+                which player it controls from identical pixels.
+        """
         super().__init__()
         self._env = par_env
         self._agents = list(par_env.possible_agents)
         self.num_agents = len(self._agents)
+        self._mirror_h_for_opponents = mirror_h_for_opponents
 
         # Expose agent 0's spaces as the "official" spaces (for probe_env)
         self.observation_space = par_env.observation_space(self._agents[0])
@@ -39,12 +52,20 @@ class PettingZooParallelWrapper(gym.Env):
         self.agent_obs: List[Optional[np.ndarray]] = [None] * self.num_agents
         self.agent_actions: List[Optional[np.ndarray]] = [None] * self.num_agents
 
+    def _store_agent_obs(self, i: int, obs):
+        if obs is None:
+            self.agent_obs[i] = None
+            return
+        if self._mirror_h_for_opponents and i >= 1:
+            obs = np.ascontiguousarray(obs[..., ::-1])
+        self.agent_obs[i] = obs
+
     def reset(
         self, *, seed: Optional[int] = None, options: Optional[dict] = None
     ) -> Tuple[np.ndarray, dict]:
         obs_dict, info_dict = self._env.reset(seed=seed, options=options)
         for i, agent in enumerate(self._agents):
-            self.agent_obs[i] = obs_dict.get(agent)
+            self._store_agent_obs(i, obs_dict.get(agent))
         return self.agent_obs[0], info_dict.get(self._agents[0], {})
 
     def step(self, action: Any) -> Tuple[np.ndarray, float, bool, bool, dict]:
@@ -70,7 +91,7 @@ class PettingZooParallelWrapper(gym.Env):
 
         # Update side-channel obs for all agents
         for i, agent in enumerate(self._agents):
-            self.agent_obs[i] = obs_dict.get(agent)
+            self._store_agent_obs(i, obs_dict.get(agent))
 
         any_term = any(term_dict.values())
         any_trunc = any(trunc_dict.values())

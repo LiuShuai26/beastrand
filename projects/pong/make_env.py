@@ -8,6 +8,13 @@ Preprocessing (via supersuit, applied to all agents uniformly):
 
 Final obs shape: (4, 84, 84) uint8 — compatible with AtariPolicy / NatureCNN.
 The wrapper (PettingZooParallelWrapper) is shared with the tennis project.
+
+Wrapper is constructed with ``mirror_h_for_opponents=True``: pong_v3 hands the
+SAME pixel buffer to both first_0 and second_0, with no agent-id signal. A
+single shared self-play policy cannot disambiguate which paddle it controls
+from identical input, and collapses to symmetric play (reward stuck near 0).
+Horizontally mirroring the opponent's view lets one policy learn a single
+"my paddle on the left" perspective and be deployed on either paddle.
 """
 from __future__ import annotations
 
@@ -42,4 +49,4 @@ def make_env(
     par_env = ss.frame_stack_v2(par_env, stack_size=frame_stack)
     par_env = ss.reshape_v0(par_env, (frame_stack, 84, 84))
 
-    return PettingZooParallelWrapper(par_env)
+    return PettingZooParallelWrapper(par_env, mirror_h_for_opponents=True)
